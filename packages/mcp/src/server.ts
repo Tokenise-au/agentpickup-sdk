@@ -1,6 +1,6 @@
 // The agentPickup MCP server: lets any MCP client (Claude, ChatGPT, Cursor, an agent framework) find pickup
 // shops near someone, see what they sell, order, pay over x402, and hand its user the QR to collect with.
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import QRCode from "qrcode";
 import { z } from "zod";
@@ -8,7 +8,7 @@ import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard } from "./ca
 import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.4.2";
+export const VERSION = "0.4.3";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -249,6 +249,16 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     },
     async () => ({
       contents: [{ uri: CARD_URI, mimeType: CARD_MIME_TYPE, text: passCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
+    }),
+  );
+  // Apps that loaded an older tool list (a phone that hasn't reconnected, a ChatGPT app version fixed at review) ask
+  // for an older version's card: they get today's.
+  server.registerResource(
+    "pickup-pass-earlier",
+    new ResourceTemplate("ui://agentpickup/pass-{version}.html", { list: undefined }),
+    { title: "Pickup pass", mimeType: CARD_MIME_TYPE, _meta: { ui: { prefersBorder: false } } },
+    async (uri) => ({
+      contents: [{ uri: uri.href, mimeType: CARD_MIME_TYPE, text: passCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
     }),
   );
 
@@ -594,6 +604,14 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     },
     async () => ({
       contents: [{ uri: SHARE_URI, mimeType: CARD_MIME_TYPE, text: shareCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
+    }),
+  );
+  server.registerResource(
+    "share-agentpickup-earlier",
+    new ResourceTemplate("ui://agentpickup/share-{version}.html", { list: undefined }),
+    { title: "Share agentPickup", mimeType: CARD_MIME_TYPE, _meta: { ui: { prefersBorder: false } } },
+    async (uri) => ({
+      contents: [{ uri: uri.href, mimeType: CARD_MIME_TYPE, text: shareCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
     }),
   );
 
