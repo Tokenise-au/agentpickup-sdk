@@ -5,13 +5,16 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import QRCode from "qrcode";
 import { z } from "zod";
 import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard } from "./card.js";
+import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.4.1";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
 const CARD_TOOL_META = { ui: { resourceUri: CARD_URI }, "ui/resourceUri": CARD_URI };
+const SHARE_URI = `ui://agentpickup/share-${VERSION}.html`;
+const SHARE_TOOL_META = { ui: { resourceUri: SHARE_URI }, "ui/resourceUri": SHARE_URI };
 
 export interface PickupMcpOptions {
   /** The agentPickup shop this server orders from. */
@@ -34,6 +37,11 @@ export interface PickupMcpOptions {
   payer?: Payer;
   /** Notes added to the instructions agents read on connecting, e.g. which of this host's shops take what. */
   instructions?: string;
+  /**
+   * The page where people add agentPickup to their assistant, which share_agentpickup and the pass card's
+   * "Invite a friend" link point to. Default https://agentpickup.app/add.
+   */
+  addPageUrl?: string;
 }
 
 type DirectoryShop = {
@@ -73,6 +81,10 @@ const rememberShop = (shop: string, name: unknown) => {
   shopNames.set(shop, name);
 };
 
+/** A shop's name as the add page's ?shop= matches it: "Demo Café" -> "demo-cafe". */
+const slugOf = (name: string) =>
+  name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
 /** The QR in ink on transparent: the card's tile behind it is white, or lime once the order is ready. */
 const qrSvg = (content: string) =>
   QRCode.toString(content, { type: "svg", errorCorrectionLevel: "M", margin: 0, color: { dark: "#0a0b0dff", light: "#00000000" } });
@@ -92,6 +104,7 @@ const INSTRUCTIONS = `agentPickup lets you buy things online for the user to col
    once it's paid and keeps itself up to date until it's collected. Otherwise give the user the pass link and pickup
    code. They show the QR at the counter, or say the code, to collect.
 get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
+share_agentpickup: when the user asks how to share agentPickup or get friends using it, shows a QR and link.
 Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
 group_order_status shows who's in; close_group_order closes it early.`;
@@ -184,9 +197,22 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       total: money(order.totalCents, order.currency),
       collectBy: order.collectBy,
       collectedAt: order.collectedAt ?? null,
+      inviteUrl: addLinks(shop).sharePageUrl,
       ...extra,
       ...(pass ? { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qrSvg: await qrSvg(pass.qrContent) } : {}),
     };
+  }
+
+  /** The add page for sharing: for one of this host's shops when given (?shop=<slug>), else everyone's. */
+  const addPage = (opts.addPageUrl ?? "https://agentpickup.app/add").replace(/\/$/, "");
+  function addLinks(shop?: string) {
+    let slug = "";
+    if (shop) {
+      const u = new URL(shop);
+      slug = u.pathname.match(/\/v\/([^/]+)/)?.[1] ?? (u.pathname === "/" || u.pathname === "" ? slugOf(shopNames.get(shop) ?? "") : "");
+    }
+    const q = slug ? `shop=${encodeURIComponent(slug)}` : "";
+    return { url: `${addPage}${q ? `?${q}` : ""}`, sharePageUrl: `${addPage}?share=1${q ? `&${q}` : ""}` };
   }
 
   const claimArg = z
@@ -552,6 +578,56 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qrContent: pass.qrContent, status: pass.order?.status },
         pass.order ? await cardFor(shop, pass.order, { claim: args.claim }, pass) : undefined,
       );
+    }),
+  );
+
+  // ---------- sharing ----------
+  server.registerResource(
+    "share-agentpickup",
+    SHARE_URI,
+    {
+      title: "Share agentPickup",
+      description: "A QR and link for friends to add agentPickup to their assistant.",
+      mimeType: CARD_MIME_TYPE,
+      _meta: { ui: { prefersBorder: false } },
+    },
+    async () => ({
+      contents: [{ uri: SHARE_URI, mimeType: CARD_MIME_TYPE, text: shareCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
+    }),
+  );
+
+  server.registerTool(
+    "share_agentpickup",
+    {
+      title: "Share agentPickup",
+      description:
+        "A QR code and link the user can share so friends can add agentPickup to Claude, ChatGPT or Grok and order too. " +
+        "Use when the user asks how to share agentPickup, invite friends, or get others using it. Name a shop to share it with that café picked.",
+      inputSchema: { ...shopArg },
+      annotations: { title: "Share agentPickup", readOnlyHint: true, openWorldHint: false },
+      _meta: SHARE_TOOL_META,
+    },
+    guarded(async (args: { shop_url?: string }) => {
+      const shop = args.shop_url ? await shopFor(args.shop_url) : undefined;
+      const name = shop ? await shopName(shop) : undefined;
+      const links = addLinks(shop);
+      const card: ShareCard = {
+        v: 1,
+        ...links,
+        qrSvg: await QRCode.toString(links.url, { type: "svg", errorCorrectionLevel: "M", margin: 0, color: { dark: "#0a0b0dff", light: "#00000000" } }),
+        ...(name ? { shopName: name } : {}),
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Share this link: ${links.url}. A friend opens it (or scans its QR off the user's screen), adds agentPickup to Claude, ChatGPT or Grok, ` +
+              `then just asks for their usual${name ? ` at ${name}` : ""}. ${links.sharePageUrl} opens the phone's share sheet and has a sticker to print.`,
+          },
+        ],
+        _meta: { [SHARE_META_KEY]: card },
+      };
     }),
   );
 

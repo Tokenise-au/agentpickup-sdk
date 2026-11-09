@@ -17,6 +17,7 @@ QR they show at the counter to collect.
 | `start_group_order` | Starts a group order (a coffee run) with a closing time; returns the code to share and a key to close it early |
 | `join_group_order` | Adds the user's items to a group order by its code; pay the share with `pay_order` before it closes |
 | `group_order_status` | Who's in, what they ordered, who has paid, and whether the shop's order is ready or collected |
+| `share_agentpickup` | A QR and link for friends to add agentPickup to their assistant (as a card where the chat shows cards), for everyone or with one café picked |
 | `close_group_order` | Closes a group order early, as its organiser; the shop gets one combined order and the organiser its QR |
 
 ## The pickup pass card
@@ -26,7 +27,8 @@ among them), `create_pickup_order`, `order_status` and `get_pickup_pass` show th
 it's unpaid, then the QR and pickup code, kept up to date until it's collected. When the shop marks it ready, the QR's
 tile turns lime. The card is one self-contained page (`ui://agentpickup/pass-<version>.html`) that loads nothing from
 anywhere else. In apps without cards, the agent gives the user the pass link and pickup code. The shop emails the pass
-either way.
+either way. The card's "Invite a friend" link, and `share_agentpickup`'s own card, point at the add page
+(`addPageUrl`, default https://agentpickup.app/add) so friends can add it too.
 
 ## Use it
 

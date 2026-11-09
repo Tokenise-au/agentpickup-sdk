@@ -31,6 +31,8 @@ export interface PassCard {
   pickupCode?: string | null;
   /** The QR as SVG, ink on transparent, so the tile behind it sets the colour. */
   qrSvg?: string;
+  /** The add page's share mode, for "Invite a friend". */
+  inviteUrl?: string;
 }
 
 const PAGE = String.raw`<!doctype html>
@@ -78,7 +80,8 @@ body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI
 button{font:inherit;font-size:14px;border-radius:10px;padding:10px 14px;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--text)}
 button.pay{background:var(--lime);color:var(--ink);border-color:var(--lime);font-weight:600}
 button.link{background:none;border:none;padding:0;color:var(--muted);text-decoration:underline;font-size:13px}
-.foot{font-size:11px;color:var(--muted);margin-top:12px;text-align:right}
+.foot{font-size:11px;color:var(--muted);margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.foot button.link{font-size:12px}
 @media (prefers-reduced-motion:reduce){.pour{transition:none}.wrap.ready::after{animation:none;opacity:1}}
 </style>
 </head>
@@ -245,7 +248,7 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
     if (status === "awaiting_payment" && s.checkoutUrl) actions += '<button class="pay" data-open="checkoutUrl">Pay' + (s.total ? " " + esc(s.total) : "") + " by card</button>";
     if (live && s.passUrl) actions += '<button class="link" data-open="passUrl">Open the pass</button>';
     if (actions) h += '<div class="row">' + actions + "</div>";
-    h += '<div class="foot">agentPickup</div></div>';
+    h += '<div class="foot">' + (s.inviteUrl ? '<button class="link" data-open="inviteUrl">Invite a friend</button>' : "<span></span>") + "<span>agentPickup</span></div></div>";
     return h;
   }
   function render() {
