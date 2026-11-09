@@ -8,7 +8,7 @@ import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard } from "./ca
 import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
