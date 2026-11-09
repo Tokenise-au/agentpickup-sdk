@@ -1,7 +1,12 @@
 // The pickup pass as an MCP Apps card (ui:// resource, text/html;profile=mcp-app): chat apps that show cards (Claude,
-// ChatGPT) draw it beside the tool result. It shows the order, a Pay button while it's unpaid, then the QR and pickup
-// code, and keeps itself up to date (order_status with the order's claim) until it's collected. At "ready" the QR's
-// tile turns brand lime. One self-contained page: no scripts, fonts or images from anywhere else.
+// ChatGPT) draw it beside the tool result. While the order is unpaid it shows what's in it and a Pay button; once
+// paid, the QR, pickup code and collect-by time; and it keeps itself up to date (order_status with the order's
+// claim) until it's collected. At "ready" the QR's tile turns brand lime. One self-contained page: no scripts,
+// fonts or images from anywhere else.
+//
+// The card reads its data from the tool result's structuredContent.card. Hosts pass structuredContent to the card
+// (Claude drops _meta), so everything the card draws goes there, with the QR as a compact bit grid rather than an
+// image. _meta carries the same for hosts that read it, and the text JSON is a last resort.
 //
 // The bridge is the MCP Apps postMessage protocol (JSON-RPC 2.0 with the host, protocol 2026-01-26), written out
 // here rather than bundling the 300 KB SDK: ui/initialize, ui/notifications/initialized, tool-result,
@@ -9,8 +14,14 @@
 
 export const CARD_MIME_TYPE = "text/html;profile=mcp-app";
 
-/** Where tools hand their card data: the card reads it, the model doesn't need it. */
+/** The _meta key that mirrors structuredContent.card, for hosts that pass _meta. */
 export const CARD_META_KEY = "agentpickup/pass";
+
+/** A QR as a bit grid: size × size modules, row by row, packed 8 to a byte (first module in the top bit), base64. */
+export interface QrBits {
+  size: number;
+  bits: string;
+}
 
 /** What the card draws. Every field but orderId is optional: later results fill in or update what's there. */
 export interface PassCard {
@@ -18,22 +29,50 @@ export interface PassCard {
   orderId: string;
   shopUrl?: string;
   shopName?: string;
+  /** Where to collect: the shop's address, or its counter's name. */
+  where?: string;
   /** Lets the card call order_status itself while the order moves along. */
   claim?: string;
   status?: string;
   rail?: string;
+  /** "2× Flat white, 1× Croissant" */
   items?: string;
+  /** The order's lines with their prices, for the card's receipt while it's unpaid. */
+  lines?: { qty: number; name: string; price?: string }[];
   total?: string;
   collectBy?: number | null;
   collectedAt?: number | null;
   checkoutUrl?: string;
   passUrl?: string;
   pickupCode?: string | null;
-  /** The QR as SVG, ink on transparent, so the tile behind it sets the colour. */
-  qrSvg?: string;
+  /** The pass's QR, once it's paid. */
+  qr?: QrBits;
   /** The add page's share mode, for "Invite a friend". */
   inviteUrl?: string;
 }
+
+/**
+ * Draws a QR bit grid as an SVG path, one run of dark modules per segment. Plain JavaScript source, so the cards
+ * run exactly this text; the server and tests use the same function below.
+ */
+export const QR_PATH_JS = `function (qr, decode) {
+  var raw = (decode || function (b) { return atob(b); })(qr.bits);
+  var size = qr.size;
+  function dark(i) { return (raw.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1; }
+  var d = "";
+  for (var y = 0; y < size; y++) {
+    var x = 0;
+    while (x < size) {
+      if (!dark(y * size + x)) { x++; continue; }
+      var start = x;
+      while (x < size && dark(y * size + x)) x++;
+      d += "M" + start + " " + y + "h" + (x - start) + "v1h-" + (x - start) + "z";
+    }
+  }
+  return d;
+}`;
+
+export const qrPathFromBits = new Function(`return ${QR_PATH_JS}`)() as (qr: QrBits, decode?: (b64: string) => string) => string;
 
 const PAGE = String.raw`<!doctype html>
 <html lang="en">
@@ -42,46 +81,53 @@ const PAGE = String.raw`<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pickup pass</title>
 <style>
-:root{--bg:#ffffff;--surface:#f4f4f1;--text:#16161a;--muted:#66666d;--line:rgba(10,11,13,.12);--ok:#2e7d32;--lime:#b5f23d;--ink:#0a0b0d;color-scheme:light}
-:root[data-theme=dark]{--bg:#1d1d20;--surface:#2a2a2e;--text:#f2f2f4;--muted:#a3a3ab;--line:rgba(255,255,255,.14);--ok:#8fd47f;color-scheme:dark}
-@media (prefers-color-scheme:dark){:root:not([data-theme]){--bg:#1d1d20;--surface:#2a2a2e;--text:#f2f2f4;--muted:#a3a3ab;--line:rgba(255,255,255,.14);--ok:#8fd47f;color-scheme:dark}}
+:root{--bg:#ffffff;--surface:#f4f4f1;--text:#16161a;--muted:#66666d;--faint:#9a9aa0;--line:rgba(10,11,13,.1);--ok:#23843b;--okbg:#e8f5ea;--warn:#8a5a00;--warnbg:#fdf2dc;--lime:#b5f23d;--ink:#0a0b0d;color-scheme:light}
+:root[data-theme=dark]{--bg:#1d1d20;--surface:#28282c;--text:#f2f2f4;--muted:#a3a3ab;--faint:#74747c;--line:rgba(255,255,255,.12);--ok:#8fd47f;--okbg:#1f3322;--warn:#f2c46b;--warnbg:#3a2f17;color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme]){--bg:#1d1d20;--surface:#28282c;--text:#f2f2f4;--muted:#a3a3ab;--faint:#74747c;--line:rgba(255,255,255,.12);--ok:#8fd47f;--okbg:#1f3322;--warn:#f2c46b;--warnbg:#3a2f17;color-scheme:dark}}
 html,body{margin:0;padding:0;background:transparent}
 body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif);color:var(--text);-webkit-font-smoothing:antialiased;padding:2px}
-.card{box-sizing:border-box;max-width:380px;margin:0 auto;background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:16px 18px}
-.head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
-.shop{font-weight:600;font-size:15px;margin:0}
-.items{font-size:13px;color:var(--muted);margin:2px 0 0}
-.badge{font-size:12px;line-height:1;padding:6px 10px;border-radius:999px;background:var(--surface);white-space:nowrap}
-.badge.ready{background:var(--lime);color:var(--ink);font-weight:600}
-.wrap{position:relative;border-radius:12px}
-.tile{position:relative;overflow:hidden;background:#ffffff;border-radius:12px;padding:14px;display:flex;justify-content:center;align-items:center;border:1px solid var(--line);min-height:120px}
-.tile svg{position:relative;display:block;width:100%;max-width:220px;height:auto}
+.card{box-sizing:border-box;max-width:380px;margin:0 auto;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:16px 18px 14px}
+.head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.shop{font-weight:650;font-size:16px;margin:0;letter-spacing:-.01em}
+.sub{font-size:13px;color:var(--muted);margin:2px 0 0}
+.pill{font-size:12px;line-height:1;padding:6px 10px;border-radius:999px;white-space:nowrap;background:var(--surface);color:var(--muted)}
+.pill.awaiting_payment{background:var(--warnbg);color:var(--warn)}
+.pill.paid,.pill.collected{background:var(--okbg);color:var(--ok)}
+.pill.ready{background:var(--lime);color:var(--ink);font-weight:650}
+.lines{margin:14px 0 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:8px 0;font-size:14px}
+.line{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.line span:first-child{min-width:0;overflow-wrap:anywhere}
+.line.total{font-weight:650}
+.wrap{position:relative;border-radius:14px;margin-top:14px}
+.tile{position:relative;overflow:hidden;background:#ffffff;border-radius:14px;padding:16px;display:flex;justify-content:center;align-items:center;border:1px solid var(--line);min-height:120px}
+.tile svg{position:relative;display:block;width:100%;max-width:210px;height:auto}
 .pour{position:absolute;left:0;right:0;bottom:0;height:0;background:var(--lime);transition:height 1s cubic-bezier(.5,0,.2,1)}
 .wrap.ready .pour{height:100%}
 .wrap.ready .tile{border-color:var(--lime)}
-.wrap.ready::after{content:"";position:absolute;inset:0;border:2px solid var(--lime);border-radius:12px;animation:ring 1.8s ease-out infinite;pointer-events:none}
+.wrap.ready::after{content:"";position:absolute;inset:0;border:2px solid var(--lime);border-radius:14px;animation:ring 1.8s ease-out infinite;pointer-events:none}
 @keyframes ring{from{transform:scale(1);opacity:.9}to{transform:scale(1.08);opacity:0}}
 .tile.plain{background:var(--surface)}
 .done{font-size:15px;color:var(--text);text-align:center}
-.done b{display:block;font-size:34px;line-height:1.2}
-.facts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin:12px 0 0}
-.fact{background:var(--surface);border-radius:10px;padding:8px 12px}
+.done b{display:block;font-size:30px;line-height:1.2;color:var(--ok)}
+.facts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:10px 0 0}
+.fact{background:var(--surface);border-radius:12px;padding:8px 12px}
 .fact span{display:block;font-size:12px;color:var(--muted)}
-.fact b{display:block;font-size:20px;font-weight:600;overflow-wrap:anywhere}
+.fact b{display:block;font-size:19px;font-weight:650;overflow-wrap:anywhere}
 .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:2px}
-.steps{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding-top:10px;margin-top:12px}
-.step{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-.dot{width:10px;height:10px;border-radius:50%;border:1.5px solid currentColor;box-sizing:border-box}
-.step.past{color:var(--ok)}.step.past .dot{background:currentColor}
-.step.now{color:var(--text);font-weight:600}.step.now .dot{background:var(--ok);border-color:var(--ok)}
+.steps{display:flex;gap:6px;margin-top:14px}
+.step{flex:1;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--faint)}
+.step i{width:9px;height:9px;border-radius:50%;border:1.5px solid currentColor;box-sizing:border-box;flex:none}
+.step.past{color:var(--ok)}.step.past i{background:currentColor}
+.step.now{color:var(--text);font-weight:650}.step.now i{background:var(--lime);border-color:var(--lime)}
 .msg{font-size:13px;color:var(--muted);margin:10px 0 0;line-height:1.45}
 .test{font-size:12px;color:var(--muted);margin:6px 0 0}
-.row{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
-button{font:inherit;font-size:14px;border-radius:10px;padding:10px 14px;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--text)}
-button.pay{background:var(--lime);color:var(--ink);border-color:var(--lime);font-weight:600}
-button.link{background:none;border:none;padding:0;color:var(--muted);text-decoration:underline;font-size:13px}
-.foot{font-size:11px;color:var(--muted);margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
-.foot button.link{font-size:12px}
+button{font:inherit;cursor:pointer}
+.pay{display:block;width:100%;margin:14px 0 0;padding:13px 14px;border-radius:12px;border:0;background:var(--lime);color:var(--ink);font-size:15px;font-weight:650}
+.note{font-size:12px;color:var(--muted);margin:8px 0 0;text-align:center;line-height:1.4}
+.link{background:none;border:none;padding:0;color:var(--muted);text-decoration:underline;font-size:13px}
+.actions{margin-top:10px}
+.foot{font-size:11px;color:var(--faint);margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.foot .link{font-size:12px;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){.pour{transition:none}.wrap.ready::after{animation:none;opacity:1}}
 </style>
 </head>
@@ -95,6 +141,7 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
   var root = document.getElementById("root");
   var state = null, canCall = false, canOpen = false, locale, timeZone;
   var nextId = 1, pending = {}, timer = null, started = Date.now(), lastHtml = "", poured = false, lastHeight = -1, stopped = false;
+  var qrPathFromBits = __QR_PATH__;
 
   // ---------- the bridge ----------
   var host = window.parent;
@@ -128,7 +175,7 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
   function applyContext(ctx) {
     if (ctx.theme === "light" || ctx.theme === "dark") document.documentElement.setAttribute("data-theme", ctx.theme);
     var vars = ctx.styles && ctx.styles.variables;
-    if (vars) for (var k in vars) if (k.indexOf("--") === 0 && typeof vars[k] === "string") document.documentElement.style.setProperty(k, vars[k]);
+    if (vars && typeof vars["--font-sans"] === "string") document.documentElement.style.setProperty("--font-sans", vars["--font-sans"]);
     if (ctx.locale) locale = ctx.locale;
     if (ctx.timeZone) timeZone = ctx.timeZone;
   }
@@ -141,15 +188,17 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
   // ---------- results ----------
   function cardOf(result) {
     if (!result) return null;
+    var sc = result.structuredContent && result.structuredContent.card;
+    if (sc && sc.orderId) return sc;
     var meta = result._meta && result._meta["agentpickup/pass"];
     if (meta && meta.orderId) return meta;
-    // A host that drops _meta: the JSON after the tool's summary line still has the basics.
+    // Neither came through: the JSON after the tool's summary line still has the basics.
     try {
       var text = result.content && result.content[0] && result.content[0].text;
       var data = JSON.parse(text.slice(text.indexOf("\n\n") + 2));
       var id = data.orderId || data.id || (data.order && data.order.id);
       if (!id) return null;
-      return { orderId: id, status: data.status, passUrl: data.passUrl, pickupCode: data.pickupCode, checkoutUrl: data.checkoutUrl, total: data.total, claim: data.claim, shopUrl: data.shop };
+      return { orderId: id, status: data.status || (data.checkoutUrl || data.payUrl ? "awaiting_payment" : undefined), passUrl: data.passUrl, pickupCode: data.pickupCode, checkoutUrl: data.checkoutUrl, total: data.total, claim: data.claim, shopUrl: data.shop };
     } catch (e) { return null; }
   }
   function onResult(result) {
@@ -198,36 +247,59 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
       return s;
     } catch (e) { return d.toLocaleTimeString(); }
   }
-  function safeSvg(svg) { return typeof svg === "string" && /^<svg[\s>]/.test(svg) && !/<script|<foreignObject|\son[a-z]+=/i.test(svg) ? svg : ""; }
+  function qrSvg(qr) {
+    if (!qr || typeof qr.bits !== "string" || !(qr.size > 0 && qr.size < 200)) return "";
+    try {
+      return '<svg viewBox="0 0 ' + qr.size + " " + qr.size + '" shape-rendering="crispEdges" role="img" aria-label="Pickup QR code"><path fill="#0a0b0d" d="' + qrPathFromBits(qr) + '"/></svg>';
+    } catch (e) { return ""; }
+  }
   function message(s) {
     var live = canCall && s.claim;
     switch (s.status) {
-      case "awaiting_payment":
-        return s.checkoutUrl
-          ? "Pay on the checkout page. " + (live ? "This card turns into your pickup pass once it's paid." : "Then ask for the pickup pass.")
-          : "Waiting for the payment. " + (live ? "This card turns into your pickup pass once it's paid." : "");
+      case "awaiting_payment": return s.checkoutUrl ? "" : "Waiting for the payment. " + (live ? "This card becomes your pickup pass once it's paid." : "");
       case "paid": return "Paid. " + (live ? "This turns green when it's ready. " : "") + "The pass is in your email too.";
       case "ready": return "Ready at the counter. Show the QR or say the code.";
-      case "collected": return s.collectedAt ? "Collected at " + time(s.collectedAt) + ". Enjoy." : "Collected. Enjoy.";
+      case "collected": return "Enjoy. The receipt is in your email.";
       case "expired": return "This order expired before anyone collected it.";
       case "cancelled": return "This order was cancelled.";
       default: return "";
     }
   }
+  function steps(status) {
+    var first = status === "awaiting_payment" ? "Pay" : "Paid";
+    var at = { awaiting_payment: 0, paid: 1, ready: 1, collected: 3 }[status];
+    if (at === undefined) return "";
+    return '<div class="steps">' + [first, "Ready", "Collected"].map(function (name, i) {
+      var cls = i < at || (status === "ready" && i === 1) ? " past" : i === at ? " now" : "";
+      if (status === "ready" && i === 2) cls = " now";
+      return '<span class="step' + cls + '"><i></i>' + name + "</span>";
+    }).join("") + "</div>";
+  }
   function view(s) {
     var status = s.status || "awaiting_payment";
-    var label = LABELS[status] || status;
+    var unpaid = status === "awaiting_payment";
     var live = status === "paid" || status === "ready";
-    var h = '<div class="card">';
-    h += '<div class="head"><div><p class="shop">' + esc(s.shopName || "Your pickup order") + "</p>";
-    if (s.items) h += '<p class="items">' + esc(s.items) + (s.total ? " · " + esc(s.total) : "") + "</p>";
-    h += '</div><span class="badge' + (status === "ready" ? " ready" : "") + '">' + esc(label) + "</span></div>";
-    var svg = safeSvg(s.qrSvg);
+    var h = '<div class="card"><div class="head"><div>';
+    h += '<p class="shop">' + esc(s.shopName || "Your pickup order") + "</p>";
+    var sub = unpaid ? (s.where ? "Pickup at " + s.where : "") : (s.items ? s.items + (s.total ? " · " + s.total : "") : "");
+    if (sub) h += '<p class="sub">' + esc(sub) + "</p>";
+    h += '</div><span class="pill ' + esc(status) + '">' + esc(LABELS[status] || status) + "</span></div>";
+
+    if (unpaid) {
+      var lines = s.lines && s.lines.length ? s.lines : null;
+      if (lines || s.total) {
+        h += '<div class="lines">';
+        if (lines) lines.forEach(function (l) { h += '<div class="line"><span>' + esc(l.qty + "× " + l.name) + "</span><span>" + esc(l.price || "") + "</span></div>"; });
+        else if (s.items) h += '<div class="line"><span>' + esc(s.items) + "</span><span></span></div>";
+        if (s.total) h += '<div class="line total"><span>Total</span><span>' + esc(s.total) + "</span></div>";
+        h += "</div>";
+      }
+    }
+    var svg = qrSvg(s.qr);
     if (live && svg) {
-      h += '<div class="wrap' + (status === "ready" && poured ? " ready" : "") + '" id="wrap"><div class="tile"><div class="pour"></div>' +
-        svg.replace("<svg", '<svg role="img" aria-label="Pickup QR code"') + "</div></div>";
+      h += '<div class="wrap' + (status === "ready" && poured ? " ready" : "") + '" id="wrap"><div class="tile"><div class="pour"></div>' + svg + "</div></div>";
     } else if (status === "collected") {
-      h += '<div class="wrap"><div class="tile plain"><div class="done"><b>&#10003;</b>Collected</div></div></div>';
+      h += '<div class="wrap"><div class="tile plain"><div class="done"><b>&#10003;</b>' + esc(s.collectedAt ? "Collected at " + time(s.collectedAt) : "Collected") + "</div></div></div>";
     }
     if (live && (s.pickupCode || s.collectBy)) {
       h += '<div class="facts">';
@@ -235,19 +307,15 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
       if (s.collectBy) h += '<div class="fact"><span>Collect by</span><b>' + esc(time(s.collectBy)) + "</b></div>";
       h += "</div>";
     }
-    if (live || status === "collected") {
-      var at = { paid: 0, ready: 1, collected: 2 }[status];
-      h += '<div class="steps">' + ["Paid", "Ready", "Collected"].map(function (name, i) {
-        return '<span class="step' + (i < at ? " past" : i === at ? " now" : "") + '"><span class="dot"></span>' + name + "</span>";
-      }).join("") + "</div>";
-    }
+    h += steps(status);
     var msg = message(s);
     if (msg) h += '<p class="msg">' + esc(msg) + "</p>";
+    if (unpaid && s.checkoutUrl) {
+      h += '<button class="pay" data-open="checkoutUrl">Pay' + (s.total ? " " + esc(s.total) : "") + "</button>";
+      h += '<p class="note">Card, Apple Pay or Google Pay on the shop\'s secure Square checkout. This card becomes your pickup pass.</p>';
+    }
     if (s.rail === "test") h += '<p class="test">Test order: no money moved.</p>';
-    var actions = "";
-    if (status === "awaiting_payment" && s.checkoutUrl) actions += '<button class="pay" data-open="checkoutUrl">Pay' + (s.total ? " " + esc(s.total) : "") + " by card</button>";
-    if (live && s.passUrl) actions += '<button class="link" data-open="passUrl">Open the pass</button>';
-    if (actions) h += '<div class="row">' + actions + "</div>";
+    if (live && s.passUrl) h += '<div class="actions"><button class="link" data-open="passUrl">Open the pass</button></div>';
     h += '<div class="foot">' + (s.inviteUrl ? '<button class="link" data-open="inviteUrl">Invite a friend</button>' : "<span></span>") + "<span>agentPickup</span></div></div>";
     return h;
   }
@@ -293,5 +361,5 @@ button.link{background:none;border:none;padding:0;color:var(--muted);text-decora
 
 /** The card's page. Its version goes in the handshake, so a host's logs say which card it ran. */
 export function passCardHtml(version: string): string {
-  return PAGE.replace("__VERSION__", version);
+  return PAGE.replace("__VERSION__", version).replace("__QR_PATH__", QR_PATH_JS);
 }

@@ -4,11 +4,11 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import QRCode from "qrcode";
 import { z } from "zod";
-import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard } from "./card.js";
+import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard, type QrBits } from "./card.js";
 import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.4.3";
+export const VERSION = "0.4.4";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -63,7 +63,7 @@ type Order = {
   id: string;
   status: string;
   rail?: string;
-  items: { id: string; name: string; qty: number }[];
+  items: { id: string; name: string; qty: number; unitCents?: number }[];
   totalCents: number;
   currency: string;
   collectBy: number | null;
@@ -72,22 +72,36 @@ type Order = {
 
 type Pass = { order: Order; passUrl: string; pickupCode: string; qrContent: string };
 
-// Shop names for the card, so polling order_status needn't read the catalog each time. Shared across the
-// per-request servers a hosted endpoint makes.
+// Shop names and where to collect, for the card, so polling order_status needn't read the catalog each time.
+// Shared across the per-request servers a hosted endpoint makes.
 const shopNames = new Map<string, string>();
-const rememberShop = (shop: string, name: unknown) => {
+const shopWhere = new Map<string, string>();
+const rememberShop = (shop: string, name: unknown, location?: { name?: string; address?: string }) => {
   if (typeof name !== "string" || !name) return;
-  if (shopNames.size > 500) shopNames.clear();
+  if (shopNames.size > 500) {
+    shopNames.clear();
+    shopWhere.clear();
+  }
   shopNames.set(shop, name);
+  const where = location?.address || location?.name;
+  if (where) shopWhere.set(shop, where);
 };
 
 /** A shop's name as the add page's ?shop= matches it: "Demo Café" -> "demo-cafe". */
 const slugOf = (name: string) =>
   name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-/** The QR in ink on transparent: the card's tile behind it is white, or lime once the order is ready. */
-const qrSvg = (content: string) =>
-  QRCode.toString(content, { type: "svg", errorCorrectionLevel: "M", margin: 0, color: { dark: "#0a0b0dff", light: "#00000000" } });
+/**
+ * A QR as a compact bit grid for the cards (a few hundred characters, where an SVG is several thousand): the cards
+ * draw it, and the assistant that also reads structuredContent isn't handed an image's worth of path data.
+ */
+const qrBits = (content: string): QrBits => {
+  const { modules } = QRCode.create(content, { errorCorrectionLevel: "M" });
+  const n = modules.size;
+  const bytes = new Uint8Array(Math.ceil((n * n) / 8));
+  for (let i = 0; i < n * n; i++) if (modules.data[i]) bytes[i >> 3] |= 0x80 >> (i & 7);
+  return { size: n, bits: Buffer.from(bytes).toString("base64") };
+};
 
 class ToolError extends Error {}
 
@@ -113,11 +127,17 @@ group_order_status shows who's in; close_group_order closes it early.`;
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
 
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean; _meta?: Record<string, unknown> };
+type ToolResult = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+};
 
+/** A tool's answer, and the card's data where there's a card: in structuredContent, which hosts pass to the card. */
 const reply = (summary: string, data: unknown, card?: PassCard): ToolResult => ({
   content: [{ type: "text" as const, text: `${summary}\n\n${JSON.stringify(data, null, 2)}` }],
-  ...(card ? { _meta: { [CARD_META_KEY]: card } } : {}),
+  ...(card ? { structuredContent: { card }, _meta: { [CARD_META_KEY]: card } } : {}),
 });
 
 const failure = (message: string): ToolResult => ({ content: [{ type: "text" as const, text: message }], isError: true });
@@ -180,7 +200,8 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
   async function shopName(shop: string) {
     if (!shopNames.has(shop)) {
       const data = await call(shop, "/api/catalog").catch(() => null);
-      rememberShop(shop, (data?.merchant as { name?: string } | undefined)?.name);
+      const merchant = data?.merchant as { name?: string; location?: { name?: string; address?: string } } | undefined;
+      rememberShop(shop, merchant?.name, merchant?.location);
     }
     return shopNames.get(shop);
   }
@@ -192,6 +213,12 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       orderId: order.id,
       shopUrl: shop,
       shopName: shopNames.get(shop),
+      where: shopWhere.get(shop),
+      lines: order.items.map((i) => ({
+        qty: i.qty,
+        name: i.name,
+        ...(typeof i.unitCents === "number" ? { price: money(i.unitCents * i.qty, order.currency) } : {}),
+      })),
       status: order.status,
       rail: order.rail,
       items: order.items.map((i) => `${i.qty}× ${i.name}`).join(", "),
@@ -200,7 +227,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       collectedAt: order.collectedAt ?? null,
       inviteUrl: addLinks(shop).sharePageUrl,
       ...extra,
-      ...(pass ? { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qrSvg: await qrSvg(pass.qrContent) } : {}),
+      ...(pass ? { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qr: qrBits(pass.qrContent) } : {}),
     };
   }
 
@@ -338,7 +365,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const shop = await shopFor(args.shop_url);
       const data = await call(shop, "/api/catalog");
       const merchant = data.merchant as { name: string; location?: { name?: string; address?: string; hours?: string } };
-      rememberShop(shop, merchant.name);
+      rememberShop(shop, merchant.name, merchant.location);
       const currency = String(data.currency ?? "usd");
       const items = (data.items as { id: string; name: string; priceCents: number; description?: string }[]).map((i) => ({
         id: i.id,
@@ -397,9 +424,9 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       // shop that takes cards gives the user a checkout link.
       const catalog = (await call(shop, "/api/catalog")) as {
         payments: { x402?: unknown; test?: boolean; card?: boolean; square?: unknown };
-        merchant?: { name?: string };
+        merchant?: { name?: string; location?: { name?: string; address?: string } };
       };
-      rememberShop(shop, catalog.merchant?.name);
+      rememberShop(shop, catalog.merchant?.name, catalog.merchant?.location);
       const { payments } = catalog;
       const agentRail = payments.x402 ? "x402" : payments.test ? "test" : null;
       const cardRail = payments.square ? "square" : payments.card ? "card" : null;
@@ -633,7 +660,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const card: ShareCard = {
         v: 1,
         ...links,
-        qrSvg: await QRCode.toString(links.url, { type: "svg", errorCorrectionLevel: "M", margin: 0, color: { dark: "#0a0b0dff", light: "#00000000" } }),
+        qr: qrBits(links.url),
         ...(name ? { shopName: name } : {}),
       };
       return {
@@ -645,6 +672,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               `then just asks for their usual${name ? ` at ${name}` : ""}. ${links.sharePageUrl} opens the phone's share sheet and has a sticker to print.`,
           },
         ],
+        structuredContent: { share: card },
         _meta: { [SHARE_META_KEY]: card },
       };
     }),

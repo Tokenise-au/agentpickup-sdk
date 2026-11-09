@@ -3,6 +3,8 @@
 // buttons that open the add page's share mode (the phone's share sheet, and the printable sticker). Self-contained,
 // like the pass card: no scripts, fonts or images from anywhere else, and the same small MCP Apps bridge.
 
+import { QR_PATH_JS, type QrBits } from "./card.js";
+
 export const SHARE_META_KEY = "agentpickup/share";
 
 export interface ShareCard {
@@ -11,8 +13,8 @@ export interface ShareCard {
   url: string;
   /** The add page's share mode: the share sheet and the sticker. */
   sharePageUrl: string;
-  /** The QR as SVG, ink on transparent, for the white tile. */
-  qrSvg: string;
+  /** The QR as a bit grid, for the white tile. */
+  qr: QrBits;
   /** A café to name, when the link is for one. */
   shopName?: string;
 }
@@ -57,6 +59,7 @@ button.lime{background:var(--lime);color:var(--ink);border-color:var(--lime)}
   var VERSION = "__VERSION__";
   var root = document.getElementById("root");
   var state = null, canOpen = false, nextId = 1, pending = {}, lastHeight = -1;
+  var qrPathFromBits = __QR_PATH__;
   var host = window.parent;
   function send(msg) { try { host.postMessage(msg, "*"); } catch (e) {} }
   function request(method, params) {
@@ -93,12 +96,15 @@ button.lime{background:var(--lime);color:var(--ink);border-color:var(--lime)}
     else window.open(url, "_blank", "noopener");
   }
   function onResult(result) {
-    var data = result && result._meta && result._meta["agentpickup/share"];
+    var data = (result && result.structuredContent && result.structuredContent.share) || (result && result._meta && result._meta["agentpickup/share"]);
     if (data && data.url) state = data;
     render();
   }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-  function safeSvg(svg) { return typeof svg === "string" && /^<svg[\s>]/.test(svg) && !/<script|<foreignObject|\son[a-z]+=/i.test(svg) ? svg : ""; }
+  function qrSvg(qr) {
+    if (!qr || typeof qr.bits !== "string" || !(qr.size > 0 && qr.size < 200)) return "";
+    try { return '<svg viewBox="0 0 ' + qr.size + " " + qr.size + '" shape-rendering="crispEdges" role="img" aria-label="QR code to add agentPickup"><path fill="#0a0b0d" d="' + qrPathFromBits(qr) + '"/></svg>'; } catch (e) { return ""; }
+  }
   function copy(text, button) {
     var done = function () { button.textContent = "Copied"; setTimeout(function () { button.textContent = "Copy"; }, 1600); };
     try {
@@ -117,14 +123,14 @@ button.lime{background:var(--lime);color:var(--ink);border-color:var(--lime)}
   }
   function render() {
     if (!state) { root.innerHTML = ""; return reportSize(); }
-    var svg = safeSvg(state.qrSvg);
+    var svg = qrSvg(state.qr);
     var shown = state.url.replace(/^https?:\/\//, "");
     root.innerHTML =
       '<div class="card">' +
       '<div class="top"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" fill="#16191d"/><rect x="7" y="7" width="7" height="7" rx="1.5" fill="#fff"/><rect x="18" y="7" width="7" height="7" rx="1.5" fill="#fff"/><rect x="7" y="18" width="7" height="7" rx="1.5" fill="#fff"/><path d="M18.5 21.5l2.5 2.5 4.5-5" fill="none" stroke="#b5f23d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span><span class="dim">agent</span>Pickup</span></div>' +
       "<h1>" + (state.shopName ? "Order from " + esc(state.shopName) + "<br>with your <em>AI</em>" : "Order ahead<br>from your <em>AI</em>") + "</h1>" +
       '<p class="sub">Claude, ChatGPT or Grok</p>' +
-      '<div class="row">' + (svg ? '<div class="tile">' + svg.replace("<svg", '<svg role="img" aria-label="QR code to add agentPickup"') + "</div>" : "") +
+      '<div class="row">' + (svg ? '<div class="tile">' + svg + "</div>" : "") +
       "<ol><li>Scan</li><li>Add agentPickup</li><li>Ask for your usual</li></ol></div>" +
       '<div class="link"><code id="url">' + esc(shown) + '</code><button type="button" id="copy">Copy</button></div>' +
       '<div class="actions"><button class="lime" type="button" id="share">Share</button><button type="button" id="sticker">Get the sticker</button></div>' +
@@ -153,5 +159,5 @@ button.lime{background:var(--lime);color:var(--ink);border-color:var(--lime)}
 </html>`;
 
 export function shareCardHtml(version: string): string {
-  return PAGE.replace("__VERSION__", version);
+  return PAGE.replace("__VERSION__", version).replace("__QR_PATH__", QR_PATH_JS);
 }

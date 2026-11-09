@@ -8,7 +8,7 @@
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.4.3",
+  "version": "0.4.4",
   "websiteUrl": "https://agentpickup.app",
   "icons": [
     {
@@ -20,7 +20,7 @@
     {
       "registryType": "npm",
       "identifier": "@agentpickup/mcp",
-      "version": "0.4.3",
+      "version": "0.4.4",
       "transport": {
         "type": "stdio"
       },
