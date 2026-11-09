@@ -1,6 +1,6 @@
 {
   "name": "@agentpickup/mcp",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "MCP server for agentPickup: let an AI agent find pickup shops near its user, order, pay by card or in USDC over x402, and hand its user the QR to collect in person.",
   "mcpName": "io.github.dav3trad3r/agentpickup",
   "type": "module",
@@ -56,6 +56,7 @@
     "@x402/core": "2.29.0",
     "@x402/evm": "2.29.0",
     "@x402/extensions": "2.29.0",
+    "qrcode": "^1.5.4",
     "viem": "^2.57.14",
     "zod": "^4.6.7"
   }

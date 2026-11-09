@@ -2,10 +2,16 @@
 // shops near someone, see what they sell, order, pay over x402, and hand its user the QR to collect with.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import QRCode from "qrcode";
 import { z } from "zod";
+import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard } from "./card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.3.3";
+export const VERSION = "0.4.0";
+
+// The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
+const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
+const CARD_TOOL_META = { ui: { resourceUri: CARD_URI }, "ui/resourceUri": CARD_URI };
 
 export interface PickupMcpOptions {
   /** The agentPickup shop this server orders from. */
@@ -48,24 +54,44 @@ type DirectoryShop = {
 type Order = {
   id: string;
   status: string;
-  items: { id: string; name: string; qty: number; priceCents: number }[];
+  rail?: string;
+  items: { id: string; name: string; qty: number }[];
   totalCents: number;
   currency: string;
   collectBy: number | null;
+  collectedAt?: number | null;
 };
+
+type Pass = { order: Order; passUrl: string; pickupCode: string; qrContent: string };
+
+// Shop names for the card, so polling order_status needn't read the catalog each time. Shared across the
+// per-request servers a hosted endpoint makes.
+const shopNames = new Map<string, string>();
+const rememberShop = (shop: string, name: unknown) => {
+  if (typeof name !== "string" || !name) return;
+  if (shopNames.size > 500) shopNames.clear();
+  shopNames.set(shop, name);
+};
+
+/** The QR in ink on transparent: the card's tile behind it is white, or lime once the order is ready. */
+const qrSvg = (content: string) =>
+  QRCode.toString(content, { type: "svg", errorCorrectionLevel: "M", margin: 0, color: { dark: "#0a0b0dff", light: "#00000000" } });
 
 class ToolError extends Error {}
 
 const INSTRUCTIONS = `agentPickup lets you buy things online for the user to collect in person.
 0. find_shops (when available): shops near the user that sell what they want. Pass a shop's shop_url to the other tools.
 1. get_shop: see what the shop sells, its pickup location and how it takes payment.
-2. create_pickup_order: needs the user's email, where the shop sends the pickup QR.
+2. create_pickup_order: needs the user's email; the shop emails the pickup pass there too. It returns a claim:
+   keep it with the order id.
 3. pay_order: pays in USDC over x402 from the wallet set up here; with none, it hands back the pay link for the user's
    own x402 wallet. Where the shop takes cards, payment: "card" on
    create_pickup_order gives a checkout link for the user to pay on instead. Where it takes test payments (get_shop says
    so), payment: "test" runs the whole flow with no money moving. Confirm the items and total with the user first.
-4. Give the user the pass link and pickup code. They show the QR at the counter to collect.
-get_pickup_pass fetches the pass again later; order_status says whether it's ready or collected.
+4. The pass: where the chat shows cards, the order appears as a card that becomes the pickup pass (QR and code)
+   once it's paid and keeps itself up to date until it's collected. Otherwise give the user the pass link and pickup
+   code. They show the QR at the counter, or say the code, to collect.
+get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
 Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
 group_order_status shows who's in; close_group_order closes it early.`;
@@ -73,11 +99,14 @@ group_order_status shows who's in; close_group_order closes it early.`;
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
 
-const reply = (summary: string, data: unknown) => ({
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean; _meta?: Record<string, unknown> };
+
+const reply = (summary: string, data: unknown, card?: PassCard): ToolResult => ({
   content: [{ type: "text" as const, text: `${summary}\n\n${JSON.stringify(data, null, 2)}` }],
+  ...(card ? { _meta: { [CARD_META_KEY]: card } } : {}),
 });
 
-const failure = (message: string) => ({ content: [{ type: "text" as const, text: message }], isError: true });
+const failure = (message: string): ToolResult => ({ content: [{ type: "text" as const, text: message }], isError: true });
 
 /** A shop's base URL: shops can live under a path (https://host/v/cafe). A pasted API or pass link works too. */
 const shopBase = (url: URL) => {
@@ -116,7 +145,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
 
   // Tool errors go back to the model as text it can act on, not as protocol errors.
   const guarded =
-    <A>(fn: (args: A) => Promise<ReturnType<typeof reply>>) =>
+    <A>(fn: (args: A) => Promise<ToolResult>) =>
     async (args: A) => {
       try {
         return await fn(args);
@@ -125,6 +154,46 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         return failure(`Couldn't reach the shop: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
+
+  /** The pass, for whoever made the order. null while it isn't paid (or is a share of a group order). */
+  async function passByClaim(shop: string, orderId: string, claim: string): Promise<Pass | null> {
+    const res = await doFetch(new Request(`${shop}/api/orders/${encodeURIComponent(orderId)}/pass`, { headers: { "X-Pickup-Claim": claim } }));
+    if (res.status === 409) return null;
+    if (!res.ok) throw new ToolError(await errorOf(res, `The shop answered ${res.status}.`));
+    return (await res.json()) as Pass;
+  }
+
+  async function shopName(shop: string) {
+    if (!shopNames.has(shop)) {
+      const data = await call(shop, "/api/catalog").catch(() => null);
+      rememberShop(shop, (data?.merchant as { name?: string } | undefined)?.name);
+    }
+    return shopNames.get(shop);
+  }
+
+  /** What the pass card draws for an order, with its QR once there's a pass. */
+  async function cardFor(shop: string, order: Order, extra: Partial<PassCard> = {}, pass?: Pass | null): Promise<PassCard> {
+    return {
+      v: 1,
+      orderId: order.id,
+      shopUrl: shop,
+      shopName: shopNames.get(shop),
+      status: order.status,
+      rail: order.rail,
+      items: order.items.map((i) => `${i.qty}× ${i.name}`).join(", "),
+      total: money(order.totalCents, order.currency),
+      collectBy: order.collectBy,
+      collectedAt: order.collectedAt ?? null,
+      ...extra,
+      ...(pass ? { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qrSvg: await qrSvg(pass.qrContent) } : {}),
+    };
+  }
+
+  const claimArg = z
+    .string()
+    .max(200)
+    .optional()
+    .describe("The claim create_pickup_order returned with the order. With it, a paid order's pass comes back too.");
 
   const shopArg: Record<string, z.ZodType> =
     opts.allowOtherShops || opts.directoryUrl
@@ -140,6 +209,20 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       icons: [{ src: "https://agentpickup.app/logo.png", mimeType: "image/png", sizes: ["1024x1024"] }],
     },
     { instructions: opts.instructions ? `${INSTRUCTIONS}\n${opts.instructions}` : INSTRUCTIONS },
+  );
+
+  server.registerResource(
+    "pickup-pass",
+    CARD_URI,
+    {
+      title: "Pickup pass",
+      description: "The order as a card: a Pay button while it's unpaid, then the QR and pickup code, kept up to date until it's collected.",
+      mimeType: CARD_MIME_TYPE,
+      _meta: { ui: { prefersBorder: false } },
+    },
+    async () => ({
+      contents: [{ uri: CARD_URI, mimeType: CARD_MIME_TYPE, text: passCardHtml(VERSION), _meta: { ui: { prefersBorder: false } } }],
+    }),
   );
 
   if (opts.directoryUrl) {
@@ -218,6 +301,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const shop = await shopFor(args.shop_url);
       const data = await call(shop, "/api/catalog");
       const merchant = data.merchant as { name: string; location?: { name?: string; address?: string; hours?: string } };
+      rememberShop(shop, merchant.name);
       const currency = String(data.currency ?? "usd");
       const items = (data.items as { id: string; name: string; priceCents: number; description?: string }[]).map((i) => ({
         id: i.id,
@@ -249,14 +333,14 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Order for pickup",
       description:
-        "Create an order to collect in person. Returns the order id and total; pay it with pay_order. " +
-        "The shop emails the pickup QR to `email` once it's paid. Where the shop takes cards, `payment: \"card\"` " +
-        "returns a checkout link for the user to pay on instead.",
+        "Create an order to collect in person. Returns the order id, total and a claim (keep it); pay it with pay_order. " +
+        "The shop emails the pickup pass to `email` once it's paid, and where the chat shows cards the order shows as one " +
+        "that becomes the pass. Where the shop takes cards, `payment: \"card\"` returns a checkout link for the user to pay on instead.",
       inputSchema: {
         items: z
           .array(z.object({ id: z.string().describe("Item id from get_shop"), qty: z.number().int().min(1).max(20) }))
           .min(1),
-        email: z.string().email().describe("The user's email. The pickup QR goes here."),
+        email: z.string().email().describe("The user's email. The pickup pass goes here too."),
         name: z.string().max(100).optional().describe("Name for the order, shown to staff"),
         payment: z
           .enum(["agent", "card", "test"])
@@ -268,12 +352,18 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ...shopArg,
       },
       annotations: { title: "Order for pickup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      _meta: CARD_TOOL_META,
     },
     guarded(async (args: { items: { id: string; qty: number }[]; email: string; name?: string; payment?: "agent" | "card" | "test"; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
       // The agent pays over x402 where the shop takes it, a test shop marks the order paid straight away, and a
       // shop that takes cards gives the user a checkout link.
-      const { payments } = (await call(shop, "/api/catalog")) as { payments: { x402?: unknown; test?: boolean; card?: boolean; square?: unknown } };
+      const catalog = (await call(shop, "/api/catalog")) as {
+        payments: { x402?: unknown; test?: boolean; card?: boolean; square?: unknown };
+        merchant?: { name?: string };
+      };
+      rememberShop(shop, catalog.merchant?.name);
+      const { payments } = catalog;
       const agentRail = payments.x402 ? "x402" : payments.test ? "test" : null;
       const cardRail = payments.square ? "square" : payments.card ? "card" : null;
       const rail =
@@ -295,24 +385,42 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       });
       const order = data.order as Order;
       const next = data.next as { url?: string; passUrl?: string };
+      // Older shops don't hand out claims; everything else still works.
+      const claim = typeof data.claim === "string" ? data.claim : undefined;
+      const what = `${order.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}, ${money(order.totalCents, order.currency)}`;
+      const keep = claim ? " Keep the claim: get_pickup_pass and order_status take it." : "";
       if (rail === "test") {
+        const pass = claim ? await passByClaim(shop, order.id, claim).catch(() => null) : null;
         return reply(
-          `Test order ${order.id}: ${order.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}, ${money(order.totalCents, order.currency)}, ` +
-            `marked paid with no money moving. The shop emails ${args.email} the receipt and pickup QR; the pass is at ${next.passUrl}.`,
-          { shop, orderId: order.id, status: order.status, test: true, total: money(order.totalCents, order.currency), items: order.items, passUrl: next.passUrl },
+          `Test order ${order.id}: ${what}, marked paid with no money moving. The pickup pass is at ${next.passUrl}` +
+            (pass ? ` (pickup code ${pass.pickupCode})` : "") +
+            `, and the shop emails it to ${args.email}.${keep}`,
+          {
+            shop,
+            orderId: order.id,
+            claim,
+            status: order.status,
+            test: true,
+            total: money(order.totalCents, order.currency),
+            items: order.items,
+            passUrl: next.passUrl,
+            pickupCode: pass?.pickupCode,
+          },
+          await cardFor(shop, order, { claim, rail }, pass),
         );
       }
       if (rail === "square" || rail === "card") {
         return reply(
-          `Order ${order.id}: ${order.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}, ${money(order.totalCents, order.currency)}. ` +
-            `Give the user this link to pay by card: ${next.url}. Once they've paid, the shop emails ${args.email} the receipt and pickup QR.`,
-          { shop, orderId: order.id, total: money(order.totalCents, order.currency), items: order.items, payBy: "card", checkoutUrl: next.url, collectBy: order.collectBy },
+          `Order ${order.id}: ${what}. Give the user this link to pay by card: ${next.url}. Once they've paid, the shop emails ` +
+            `${args.email} the receipt and pickup pass.${keep}`,
+          { shop, orderId: order.id, claim, total: money(order.totalCents, order.currency), items: order.items, payBy: "card", checkoutUrl: next.url, collectBy: order.collectBy },
+          await cardFor(shop, order, { claim, rail, checkoutUrl: next.url }),
         );
       }
       return reply(
-        `Order ${order.id}: ${order.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}, ${money(order.totalCents, order.currency)}. ` +
-          `Confirm with the user, then call pay_order.`,
-        { shop, orderId: order.id, total: money(order.totalCents, order.currency), items: order.items, payUrl: next.url, collectBy: order.collectBy },
+        `Order ${order.id}: ${what}. Confirm with the user, then call pay_order.${keep}`,
+        { shop, orderId: order.id, claim, total: money(order.totalCents, order.currency), items: order.items, payUrl: next.url, collectBy: order.collectBy },
+        await cardFor(shop, order, { claim, rail }),
       );
     }),
   );
@@ -386,13 +494,16 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     "order_status",
     {
       title: "Check an order",
-      description: "Whether an order is waiting for payment, paid, ready to collect, collected or expired.",
-      inputSchema: { order_id: z.string(), ...shopArg },
+      description:
+        "Whether an order is waiting for payment, paid, ready to collect, collected or expired. With the order's claim, " +
+        "a paid order's pass comes back too, and the chat's card for it updates.",
+      inputSchema: { order_id: z.string(), claim: claimArg, ...shopArg },
       annotations: { title: "Check an order", readOnlyHint: true, openWorldHint: true },
+      _meta: CARD_TOOL_META,
     },
-    guarded(async (args: { order_id: string; shop_url?: string }) => {
+    guarded(async (args: { order_id: string; claim?: string; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
-      const { order } = (await call(shop, `/api/orders/${encodeURIComponent(args.order_id)}`)) as { order: Order };
+      const { order, checkoutUrl } = (await call(shop, `/api/orders/${encodeURIComponent(args.order_id)}`)) as { order: Order; checkoutUrl?: string };
       const words: Record<string, string> = {
         awaiting_payment: "is waiting for payment",
         paid: "is paid and being prepared",
@@ -401,7 +512,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         expired: "expired before anyone collected it",
         cancelled: "was cancelled",
       };
-      return reply(`Order ${order.id} ${words[order.status] ?? `is ${order.status}`}.`, order);
+      const pass =
+        args.claim && (order.status === "paid" || order.status === "ready") ? await passByClaim(shop, order.id, args.claim).catch(() => null) : null;
+      return reply(
+        `Order ${order.id} ${words[order.status] ?? `is ${order.status}`}.` + (pass ? ` Pickup code ${pass.pickupCode}, pass at ${pass.passUrl}.` : ""),
+        pass ? { ...order, passUrl: pass.passUrl, pickupCode: pass.pickupCode } : order,
+        await cardFor(shop, order, { claim: args.claim, checkoutUrl }, pass),
+      );
     }),
   );
 
@@ -409,17 +526,32 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     "get_pickup_pass",
     {
       title: "Get the pickup pass",
-      description: "The pass link, pickup code and QR content for an order this wallet paid, by signing in with the wallet (Sign-In-With-X).",
-      inputSchema: { order_id: z.string(), ...shopArg },
+      description:
+        "The pass link, pickup code and QR for a paid order: with the claim create_pickup_order returned" +
+        (opts.payer ? ", or by signing in with the wallet that paid (Sign-In-With-X)." : "."),
+      inputSchema: { order_id: z.string(), claim: claimArg, ...shopArg },
       annotations: { title: "Get the pickup pass", readOnlyHint: true, openWorldHint: true },
+      _meta: CARD_TOOL_META,
     },
-    guarded(async (args: { order_id: string; shop_url?: string }) => {
-      if (!opts.payer) throw new ToolError("No wallet is set up here. The pass was emailed to the buyer when the order was paid.");
+    guarded(async (args: { order_id: string; claim?: string; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
-      const res = await opts.payer.signIn(`${shop}/api/orders/${encodeURIComponent(args.order_id)}/pass`, doFetch);
-      if (!res.ok) throw new ToolError(await errorOf(res, `The shop answered ${res.status}.`));
-      const pass = (await res.json()) as { passUrl: string; pickupCode: string; qrContent: string };
-      return reply(`Pickup pass: ${pass.passUrl}, pickup code ${pass.pickupCode}.`, pass);
+      let pass: Pass | null;
+      if (args.claim) {
+        pass = await passByClaim(shop, args.order_id, args.claim);
+        if (!pass) throw new ToolError("This order isn't paid yet, so there's no pass. order_status says where it's at.");
+      } else if (opts.payer) {
+        const res = await opts.payer.signIn(`${shop}/api/orders/${encodeURIComponent(args.order_id)}/pass`, doFetch);
+        if (!res.ok) throw new ToolError(await errorOf(res, `The shop answered ${res.status}.`));
+        pass = (await res.json()) as Pass;
+      } else {
+        throw new ToolError("Send the claim create_pickup_order returned with the order. The pass is also in the email the shop sent when it was paid.");
+      }
+      await shopName(shop);
+      return reply(
+        `Pickup pass: ${pass.passUrl}, pickup code ${pass.pickupCode}. The user shows the QR at the counter, or says the code.`,
+        { passUrl: pass.passUrl, pickupCode: pass.pickupCode, qrContent: pass.qrContent, status: pass.order?.status },
+        pass.order ? await cardFor(shop, pass.order, { claim: args.claim }, pass) : undefined,
+      );
     }),
   );
 
