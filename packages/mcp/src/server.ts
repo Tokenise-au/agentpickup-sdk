@@ -104,7 +104,8 @@ const INSTRUCTIONS = `agentPickup lets you buy things online for the user to col
    once it's paid and keeps itself up to date until it's collected. Otherwise give the user the pass link and pickup
    code. They show the QR at the counter, or say the code, to collect.
 get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
-share_agentpickup: when the user asks how to share agentPickup or get friends using it, shows a QR and link.
+share_agentpickup: when the user wants to share agentPickup itself, invite a friend or get friends using it, shows a
+QR and link for them. That isn't a group order: start_group_order is only for ordering together at one shop.
 Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
 group_order_status shows who's in; close_group_order closes it early.`;
@@ -657,8 +658,9 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Start a group order",
       description:
-        "Start a group order (a coffee run) at a shop. Returns a code to share: each person's agent joins with it and pays for " +
-        "their own items. When it closes, the shop gets one combined order and the organiser is emailed its pickup QR.",
+        "Start a group order (a coffee run) at a shop, when the user wants to order together with others now. Returns a code to " +
+        "share: each person's agent joins with it and pays for their own items. When it closes, the shop gets one combined order " +
+        "and the organiser is emailed its pickup QR. To share agentPickup itself with a friend, use share_agentpickup instead.",
       inputSchema: {
         organiser_name: z.string().min(1).max(60).describe("Who collects, shown to staff"),
         organiser_email: z.string().email().describe("Where the group's pickup QR goes"),
