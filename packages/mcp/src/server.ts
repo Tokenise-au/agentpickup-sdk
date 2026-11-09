@@ -26,6 +26,8 @@ export interface PickupMcpOptions {
   fetch?: Fetch;
   /** The wallet that pays. Without one, pay_order returns the price and pay link for another x402 client. */
   payer?: Payer;
+  /** Notes added to the instructions agents read on connecting, e.g. which of this host's shops take what. */
+  instructions?: string;
 }
 
 type DirectoryShop = {
@@ -58,7 +60,8 @@ const INSTRUCTIONS = `agentPickup lets you buy things online for the user to col
 0. find_shops (when available): shops near the user that sell what they want. Pass a shop's shop_url to the other tools.
 1. get_shop: see what the shop sells, its pickup location and how it takes payment.
 2. create_pickup_order: needs the user's email, where the shop sends the pickup QR.
-3. pay_order: pays from the configured wallet in USDC over x402. Where the shop takes cards, payment: "card" on
+3. pay_order: pays in USDC over x402 from the wallet set up here; with none, it hands back the pay link for the user's
+   own x402 wallet. Where the shop takes cards, payment: "card" on
    create_pickup_order gives a checkout link for the user to pay on instead. Where it takes test payments (get_shop says
    so), payment: "test" runs the whole flow with no money moving. Confirm the items and total with the user first.
 4. Give the user the pass link and pickup code. They show the QR at the counter to collect.
@@ -136,7 +139,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       websiteUrl: "https://agentpickup.app",
       icons: [{ src: "https://agentpickup.app/logo.png", mimeType: "image/png", sizes: ["1024x1024"] }],
     },
-    { instructions: INSTRUCTIONS },
+    { instructions: opts.instructions ? `${INSTRUCTIONS}\n${opts.instructions}` : INSTRUCTIONS },
   );
 
   if (opts.directoryUrl) {
@@ -346,9 +349,16 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           accepts?: { amount: string; network: string; asset: string; payTo: string }[];
         };
         const accept = required.accepts?.[0];
+        // Other ways to finish, for an agent with no wallet of its own (a chat app on the web, say).
+        const { payments } = (await call(shop, "/api/catalog").catch(() => ({ payments: {} }))) as { payments: { test?: boolean; card?: boolean; square?: unknown } };
+        const others = [
+          ...(payments.square || payments.card ? ['payment "card" gives the user a checkout link to pay on'] : []),
+          ...(payments.test ? ['payment "test" runs the whole flow with no money moving'] : []),
+        ];
         return reply(
-          `Waiting for payment: ${usd(accept?.amount)} USDC on ${accept?.network}. No wallet is configured here; ` +
-            `POST the pay link with any x402 client, or set AGENTPICKUP_WALLET_KEY.`,
+          `Waiting for payment: ${usd(accept?.amount)} USDC on ${accept?.network}. No wallet is set up in this server: pay the link ` +
+            `from the user's own x402 wallet (such as Coinbase's agent wallet), or set AGENTPICKUP_WALLET_KEY where this server runs.` +
+            (others.length ? ` Or create the order again with create_pickup_order: ${others.join("; ")}.` : ""),
           { orderId: args.order_id, payUrl, amount: usd(accept?.amount), network: accept?.network, asset: accept?.asset, payTo: accept?.payTo },
         );
       }

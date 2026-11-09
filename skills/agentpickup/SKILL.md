@@ -33,6 +33,7 @@ For a coffee run with the MCP tools: `start_group_order` gives a code to share; 
 - Prices come from the shop's menu. Never calculate or send a price yourself.
 - The pickup QR works like a ticket: whoever holds it can collect. Give it only to the user.
 - To try it for free, use a test payment at any shop with `payments.test` set. The Demo Café at https://agentpickup.app takes real USDC on Base, and the Demo Café on the test network, https://agentpickup.app/v/demo-cafe-testnet, takes testnet USDC on Base Sepolia. Neither makes anything.
+- To try paying by card, order from the Square Sandbox Café, https://agentpickup.app/v/square-sandbox-cafe, with `"rail": "square"` (MCP: `payment: "card"`), and pay on its checkout page with Square's test card 4111 1111 1111 1111, any future expiry and any CVV. Nothing is charged.
 - Standard x402 clients cap each payment at $1. Raise the cap for real orders, within the limit the user set.
 - If nobody collects in time, card payments are refunded. Whether USDC is paid back depends on the shop.
 

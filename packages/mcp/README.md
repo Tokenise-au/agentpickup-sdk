@@ -62,6 +62,7 @@ items and the total with the user before paying.
 import { createMcpHandler, walletPayer } from "@agentpickup/mcp";
 
 const mcp = createMcpHandler({ shopUrl: "https://orders.yourshop.com" }); // no wallet: pay_order quotes
+// `instructions` adds your own notes to what agents read on connecting, e.g. which of your shops take what.
 app.all("/mcp", (c) => mcp(c.req.raw)); // Streamable HTTP, stateless, any Request/Response runtime
 ```
 
