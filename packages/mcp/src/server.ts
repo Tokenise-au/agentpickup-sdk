@@ -8,7 +8,7 @@ import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard, type QrBits
 import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.4.4";
+export const VERSION = "0.5.0";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -37,6 +37,12 @@ export interface PickupMcpOptions {
   payer?: Payer;
   /** Notes added to the instructions agents read on connecting, e.g. which of this host's shops take what. */
   instructions?: string;
+  /**
+   * Card and test payments only, for connector directories that don't take crypto (Claude's, ChatGPT's): no
+   * pay_order, no group orders (their shares pay in USDC), and nothing about USDC or wallets. The person pays on
+   * the shop's own card checkout, so the connector itself never moves money.
+   */
+  cardsOnly?: boolean;
   /**
    * The page where people add agentPickup to their assistant, which share_agentpickup and the pass card's
    * "Invite a friend" link point to. Default https://agentpickup.app/add.
@@ -123,6 +129,23 @@ QR and link for them. That isn't a group order: start_group_order is only for or
 Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
 group_order_status shows who's in; close_group_order closes it early.`;
+
+const CARDS_INSTRUCTIONS = `agentPickup lets you order from cafés and shops for the user to collect in person.
+0. find_shops (when available): shops near the user that sell what they want. Pass a shop's shop_url to the other tools.
+1. get_shop: what the shop sells, where to collect, and how it takes payment.
+2. create_pickup_order, once the user has agreed the items and total. It needs the user's email (the shop emails the
+   pickup pass there too) and returns a claim: keep it with the order id.
+3. Payment: the user pays by card (or Apple Pay or Google Pay) on the shop's own checkout page, from the link
+   create_pickup_order returns or the Pay button on the order's card. Where the shop takes test payments,
+   payment: "test" runs the whole flow with no money moving.
+4. The pass: where the chat shows cards, the order's card becomes the pickup pass (QR and code) once it's paid and
+   keeps itself up to date until it's collected. Otherwise give the user the pass link and pickup code. They show the
+   QR at the counter, or say the code, to collect.
+get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
+share_agentpickup: when the user wants to share agentPickup itself or invite a friend, shows a QR and link for them.`;
+
+/** x402 networks that move no real money (the server's directory uses the same list). */
+const TEST_NETWORKS = new Set(["eip155:84532"]);
 
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
@@ -262,7 +285,9 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       websiteUrl: "https://agentpickup.app",
       icons: [{ src: "https://agentpickup.app/logo.png", mimeType: "image/png", sizes: ["1024x1024"] }],
     },
-    { instructions: opts.instructions ? `${INSTRUCTIONS}\n${opts.instructions}` : INSTRUCTIONS },
+    {
+      instructions: (opts.cardsOnly ? CARDS_INSTRUCTIONS : INSTRUCTIONS) + (opts.instructions ? `\n${opts.instructions}` : ""),
+    },
   );
 
   server.registerResource(
@@ -318,7 +343,12 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           if (args.open_now) url.searchParams.set("open_now", "true");
           const res = await doFetch(new Request(url));
           if (!res.ok) throw new ToolError(await errorOf(res, `The directory answered ${res.status}.`));
-          const { shops } = (await res.json()) as { shops: DirectoryShop[] };
+          const all = ((await res.json()) as { shops: DirectoryShop[] }).shops;
+          // Cards-only: the shops it can order from here, by card or with a test payment. A shop on a test network
+          // is there to try USDC, so it isn't one of them.
+          const shops = opts.cardsOnly
+            ? all.filter((s) => s.payments.card || (s.payments.test && !(s.payments.x402 && TEST_NETWORKS.has(s.payments.x402.network))))
+            : all;
           if (!shops.length) return reply("No agentPickup shops match. Try a wider radius, another place, or no query.", { shops: [] });
           const lines = shops.map((s) => {
             const facts = [
@@ -339,7 +369,9 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               distanceKm: s.distanceKm,
               openNow: s.openNow,
               testOnly: s.testOnly,
-              payments: { x402: s.payments.x402?.network ?? null, test: s.payments.test },
+              payments: opts.cardsOnly
+                ? { card: s.payments.card, test: s.payments.test }
+                : { x402: s.payments.x402?.network ?? null, test: s.payments.test },
               listedBy: s.source?.kind === "listed" ? s.source.domain : null,
               // agentpickup: use get_shop and create_pickup_order. ucp or web: order there instead.
               orderVia: s.order?.via ?? "agentpickup",
@@ -376,18 +408,29 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const payments = data.payments as { x402?: { network: string } | null; test?: boolean; card?: boolean; square?: { live: boolean } | null };
       const cards = Boolean(payments.square || payments.card);
       const ways = [
-        ...(payments.x402 ? [`USDC over x402 on ${payments.x402.network}, paid by the agent`] : []),
+        ...(payments.x402 && !opts.cardsOnly ? [`USDC over x402 on ${payments.x402.network}, paid by the agent`] : []),
         ...(cards ? ["cards, paid by the user on a checkout link"] : []),
         ...(payments.test ? ["test payments, with no money moving"] : []),
       ];
       return reply(
         `${merchant.name}${merchant.location?.name ? `, collect at ${merchant.location.name}` : ""}. ` +
           (!ways.length
-            ? "Doesn't take agent payments."
+            ? opts.cardsOnly
+              ? "Doesn't take card payments here."
+              : "Doesn't take agent payments."
             : ways.length === 1 && payments.test
               ? "A test shop: orders are marked paid without money moving."
               : `Takes ${ways.join("; ")}.`),
-        { shop, merchant: merchant.name, location: merchant.location, currency, items, x402: payments.x402 ?? null, cards, test: Boolean(payments.test) },
+        {
+          shop,
+          merchant: merchant.name,
+          location: merchant.location,
+          currency,
+          items,
+          ...(opts.cardsOnly ? {} : { x402: payments.x402 ?? null }),
+          cards,
+          test: Boolean(payments.test),
+        },
       );
     }),
   );
@@ -396,26 +439,36 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     "create_pickup_order",
     {
       title: "Order for pickup",
-      description:
-        "Create an order to collect in person. Returns the order id, total and a claim (keep it); pay it with pay_order. " +
-        "The shop emails the pickup pass to `email` once it's paid, and where the chat shows cards the order shows as one " +
-        "that becomes the pass. Where the shop takes cards, `payment: \"card\"` returns a checkout link for the user to pay on instead.",
+      description: opts.cardsOnly
+        ? "Create an order to collect in person, once the user has agreed the items and total. Returns the order id, total, a " +
+          "claim (keep it) and the shop's checkout link, where the user pays by card. The shop emails the pickup pass to `email` " +
+          "once it's paid, and where the chat shows cards the order shows as one that becomes the pass. At shops that take test " +
+          "payments, `payment: \"test\"` marks it paid with no money moving."
+        : "Create an order to collect in person. Returns the order id, total and a claim (keep it); pay it with pay_order. " +
+          "The shop emails the pickup pass to `email` once it's paid, and where the chat shows cards the order shows as one " +
+          "that becomes the pass. Where the shop takes cards, `payment: \"card\"` returns a checkout link for the user to pay on instead.",
       inputSchema: {
         items: z
           .array(z.object({ id: z.string().describe("Item id from get_shop"), qty: z.number().int().min(1).max(20) }))
           .min(1),
         email: z.string().email().describe("The user's email. The pickup pass goes here too."),
         name: z.string().max(100).optional().describe("Name for the order, shown to staff"),
-        payment: z
-          .enum(["agent", "card", "test"])
-          .optional()
-          .describe(
-            "Who pays: agent (USDC over x402, or a test payment at a test shop), card (the user pays on a checkout link), " +
-              "or test (where the shop takes test payments: the whole flow with no money moving). Default: agent where the shop takes it, else card.",
-          ),
+        payment: opts.cardsOnly
+          ? z
+              .enum(["card", "test"])
+              .optional()
+              .describe("card (the user pays on the shop's checkout link) or test (where the shop takes test payments: no money moves). Default: card where the shop takes it, else test.")
+          : z
+              .enum(["agent", "card", "test"])
+              .optional()
+              .describe(
+                "Who pays: agent (USDC over x402, or a test payment at a test shop), card (the user pays on a checkout link), " +
+                  "or test (where the shop takes test payments: the whole flow with no money moving). Default: agent where the shop takes it, else card.",
+              ),
         ...shopArg,
       },
-      annotations: { title: "Order for pickup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      // It creates a real order (and, paid, a charge): Claude asks before it runs.
+      annotations: { title: "Order for pickup", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       _meta: CARD_TOOL_META,
     },
     guarded(async (args: { items: { id: string; qty: number }[]; email: string; name?: string; payment?: "agent" | "card" | "test"; shop_url?: string }) => {
@@ -434,11 +487,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         args.payment === "test" ? (payments.test ? "test" : null)
         : args.payment === "card" ? cardRail
         : args.payment === "agent" ? agentRail
+        : opts.cardsOnly ? (cardRail ?? (payments.test ? "test" : null))
         : (agentRail ?? cardRail);
       if (!rail) {
         throw new ToolError(
           args.payment === "test" ? "This shop doesn't take test payments."
           : args.payment === "card" ? "This shop doesn't take cards."
+          : opts.cardsOnly ? "This shop doesn't take card payments here."
           : "This shop doesn't take agent payments.",
         );
       }
@@ -489,7 +544,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     }),
   );
 
-  server.registerTool(
+  if (!opts.cardsOnly) server.registerTool(
     "pay_order",
     {
       title: "Pay for an order",
@@ -497,7 +552,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ? `Pay an order in USDC over x402 from wallet ${opts.payer.address}. This spends money: confirm the items and total with the user first. Returns the pickup pass link.`
         : "No wallet is set up here, so this returns the price and pay link for another x402 client to pay.",
       inputSchema: { order_id: z.string(), ...shopArg },
-      annotations: { title: "Pay for an order", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "Pay for an order", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     guarded(async (args: { order_id: string; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
@@ -699,7 +754,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     return `${g.title} (code ${g.code}), ${closesIn(g)}: ${paid.length} of ${g.members.length} paid, ${money(g.paidCents, g.currency)} so far.`;
   };
 
-  server.registerTool(
+  if (!opts.cardsOnly) server.registerTool(
     "start_group_order",
     {
       title: "Start a group order",
@@ -714,7 +769,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         closes_in_minutes: z.number().int().min(5).max(240).optional().describe("Default 15"),
         ...shopArg,
       },
-      annotations: { title: "Start a group order", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Start a group order", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     guarded(async (args: { organiser_name: string; organiser_email: string; title?: string; closes_in_minutes?: number; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
@@ -731,7 +786,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     }),
   );
 
-  server.registerTool(
+  if (!opts.cardsOnly) server.registerTool(
     "join_group_order",
     {
       title: "Join a group order",
@@ -745,7 +800,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         name: z.string().min(1).max(60).describe("The user's name, shown to staff on their items"),
         ...shopArg,
       },
-      annotations: { title: "Join a group order", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Join a group order", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     guarded(async (args: { code: string; items: { id: string; qty: number }[]; email: string; name: string; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
@@ -767,7 +822,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     }),
   );
 
-  server.registerTool(
+  if (!opts.cardsOnly) server.registerTool(
     "group_order_status",
     {
       title: "Check a group order",
@@ -785,13 +840,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     }),
   );
 
-  server.registerTool(
+  if (!opts.cardsOnly) server.registerTool(
     "close_group_order",
     {
       title: "Close a group order now",
       description: "Close a group order early, as its organiser. Unpaid shares are left out; the shop gets the rest as one order.",
       inputSchema: { code: z.string().min(4).max(12), organiser_key: z.string().min(8), ...shopArg },
-      annotations: { title: "Close a group order now", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { title: "Close a group order now", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     guarded(async (args: { code: string; organiser_key: string; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
