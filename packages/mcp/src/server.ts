@@ -5,7 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.3.2";
+export const VERSION = "0.3.3";
 
 export interface PickupMcpOptions {
   /** The agentPickup shop this server orders from. */
@@ -59,7 +59,8 @@ const INSTRUCTIONS = `agentPickup lets you buy things online for the user to col
 1. get_shop: see what the shop sells, its pickup location and how it takes payment.
 2. create_pickup_order: needs the user's email, where the shop sends the pickup QR.
 3. pay_order: pays from the configured wallet in USDC over x402. Where the shop takes cards, payment: "card" on
-   create_pickup_order gives a checkout link for the user to pay on instead. Confirm the items and total with the user first.
+   create_pickup_order gives a checkout link for the user to pay on instead. Where it takes test payments (get_shop says
+   so), payment: "test" runs the whole flow with no money moving. Confirm the items and total with the user first.
 4. Give the user the pass link and pickup code. They show the QR at the counter to collect.
 get_pickup_pass fetches the pass again later; order_status says whether it's ready or collected.
 Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
@@ -255,22 +256,35 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         email: z.string().email().describe("The user's email. The pickup QR goes here."),
         name: z.string().max(100).optional().describe("Name for the order, shown to staff"),
         payment: z
-          .enum(["agent", "card"])
+          .enum(["agent", "card", "test"])
           .optional()
-          .describe("Who pays: agent (USDC over x402, or a test payment at a test shop) or card (the user pays on a checkout link). Default: agent where the shop takes it, else card."),
+          .describe(
+            "Who pays: agent (USDC over x402, or a test payment at a test shop), card (the user pays on a checkout link), " +
+              "or test (where the shop takes test payments: the whole flow with no money moving). Default: agent where the shop takes it, else card.",
+          ),
         ...shopArg,
       },
       annotations: { title: "Order for pickup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    guarded(async (args: { items: { id: string; qty: number }[]; email: string; name?: string; payment?: "agent" | "card"; shop_url?: string }) => {
+    guarded(async (args: { items: { id: string; qty: number }[]; email: string; name?: string; payment?: "agent" | "card" | "test"; shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
       // The agent pays over x402 where the shop takes it, a test shop marks the order paid straight away, and a
       // shop that takes cards gives the user a checkout link.
       const { payments } = (await call(shop, "/api/catalog")) as { payments: { x402?: unknown; test?: boolean; card?: boolean; square?: unknown } };
       const agentRail = payments.x402 ? "x402" : payments.test ? "test" : null;
       const cardRail = payments.square ? "square" : payments.card ? "card" : null;
-      const rail = args.payment === "card" ? cardRail : args.payment === "agent" ? agentRail : (agentRail ?? cardRail);
-      if (!rail) throw new ToolError(args.payment === "card" ? "This shop doesn't take cards." : "This shop doesn't take agent payments.");
+      const rail =
+        args.payment === "test" ? (payments.test ? "test" : null)
+        : args.payment === "card" ? cardRail
+        : args.payment === "agent" ? agentRail
+        : (agentRail ?? cardRail);
+      if (!rail) {
+        throw new ToolError(
+          args.payment === "test" ? "This shop doesn't take test payments."
+          : args.payment === "card" ? "This shop doesn't take cards."
+          : "This shop doesn't take agent payments.",
+        );
+      }
       const data = await call(shop, "/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -339,7 +353,16 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         );
       }
       const paid = await opts.payer.pay({ id: args.order_id, payUrl }, doFetch);
-      if (!paid.ok) throw new ToolError(paid.error);
+      if (!paid.ok) {
+        // A demo or test shop can still show the user the whole flow, with a test payment instead.
+        const { payments } = (await call(shop, "/api/catalog").catch(() => ({ payments: {} }))) as { payments: { test?: boolean } };
+        throw new ToolError(
+          paid.error +
+            (payments.test
+              ? ' This shop also takes test payments, which move no money: call create_pickup_order again with payment "test" to run the whole flow.'
+              : ""),
+        );
+      }
       return reply(
         `Paid ${paid.amount ?? ""} USDC. Pickup pass: ${paid.passUrl}` +
           (paid.emailedTo ? ` (also emailed to ${paid.emailedTo})` : "") +
