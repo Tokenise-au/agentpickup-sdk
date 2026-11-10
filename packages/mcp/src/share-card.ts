@@ -9,13 +9,13 @@ export const SHARE_META_KEY = "agentpickup/share";
 
 export interface ShareCard {
   v: 1;
-  /** The add page, maybe for one café (?shop=). */
+  /** The add page, maybe for one shop (?shop=). */
   url: string;
   /** The add page's share mode: the share sheet and the sticker. */
   sharePageUrl: string;
   /** The QR as a bit grid, for the white tile. */
   qr: QrBits;
-  /** A café to name, when the link is for one. */
+  /** A shop to name, when the link is for one. */
   shopName?: string;
 }
 

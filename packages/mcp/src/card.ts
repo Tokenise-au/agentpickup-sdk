@@ -34,6 +34,8 @@ export interface PassCard {
   /** Lets the card call order_status itself while the order moves along. */
   claim?: string;
   status?: string;
+  /** A paid order staff have started. */
+  accepted?: boolean;
   rail?: string;
   /** "2× Flat white, 1× Croissant" */
   items?: string;
@@ -257,7 +259,7 @@ button{font:inherit;cursor:pointer}
     var live = canCall && s.claim;
     switch (s.status) {
       case "awaiting_payment": return s.checkoutUrl ? "" : "Waiting for the payment. " + (live ? "This card becomes your pickup pass once it's paid." : "");
-      case "paid": return "Paid. " + (live ? "This turns green when it's ready. " : "") + "The pass is in your email too.";
+      case "paid": return (s.accepted ? "Paid. The shop is making it. " : "Paid. The shop has your order. ") + (live ? "This turns green when it's ready. " : "") + "The pass is in your email too.";
       case "ready": return "Ready at the counter. Show the QR or say the code.";
       case "collected": return "Enjoy. The receipt is in your email.";
       case "expired": return "This order expired before anyone collected it.";

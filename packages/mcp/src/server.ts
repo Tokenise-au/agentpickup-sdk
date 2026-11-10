@@ -55,7 +55,8 @@ type DirectoryShop = {
   url: string;
   location: { name: string; address?: string; hours?: string };
   currency: string;
-  payments: { x402: { network: string } | null; card: boolean; test: boolean };
+  /** cardTest: cards in a payment provider's sandbox (its test cards pay, no real money moves). */
+  payments: { x402: { network: string } | null; card: boolean; cardTest?: boolean; test: boolean };
   testOnly: boolean;
   distanceKm?: number;
   openNow: boolean | null;
@@ -74,6 +75,8 @@ type Order = {
   currency: string;
   collectBy: number | null;
   collectedAt?: number | null;
+  /** When staff started it; absent while a paid order waits for the shop. */
+  acceptedAt?: number | null;
 };
 
 type Pass = { order: Order; passUrl: string; pickupCode: string; qrContent: string };
@@ -126,11 +129,11 @@ const INSTRUCTIONS = `agentPickup lets you buy things online for the user to col
 get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
 share_agentpickup: when the user wants to share agentPickup itself, invite a friend or get friends using it, shows a
 QR and link for them. That isn't a group order: start_group_order is only for ordering together at one shop.
-Group orders (a coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
+Group orders (a lunch or coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
 group_order_status shows who's in; close_group_order closes it early.`;
 
-const CARDS_INSTRUCTIONS = `agentPickup lets you order from cafés and shops for the user to collect in person.
+const CARDS_INSTRUCTIONS = `agentPickup lets you order from local shops (cafés, bakeries, stores and more) for the user to collect in person.
 0. find_shops (when available): shops near the user that sell what they want. Pass a shop's shop_url to the other tools.
 1. get_shop: what the shop sells, where to collect, and how it takes payment.
 2. create_pickup_order, once the user has agreed the items and total. It needs the user's email (the shop emails the
@@ -243,6 +246,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ...(typeof i.unitCents === "number" ? { price: money(i.unitCents * i.qty, order.currency) } : {}),
       })),
       status: order.status,
+      ...(order.status === "paid" && order.acceptedAt ? { accepted: true } : {}),
       rail: order.rail,
       items: order.items.map((i) => `${i.qty}× ${i.name}`).join(", "),
       total: money(order.totalCents, order.currency),
@@ -324,7 +328,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           "Find agentPickup shops to order from: near a point (lat/lng), in a suburb or city (place), or selling something (query). " +
           "Returns each shop's shop_url, pickup address, hours, whether it's open now, distance, and matching menu items.",
         inputSchema: {
-          query: z.string().max(100).optional().describe('What the user wants, e.g. "flat white" or "croissant". Leave out to list everything.'),
+          query: z.string().max(100).optional().describe('What the user wants, e.g. "flat white", "sourdough" or "AA batteries". Leave out to list everything.'),
           place: z.string().max(100).optional().describe('A suburb, street or city to match against shop addresses, e.g. "Surry Hills".'),
           lat: z.number().min(-90).max(90).optional().describe("Where the user is: latitude. Send with lng."),
           lng: z.number().min(-180).max(180).optional().describe("Where the user is: longitude. Send with lat."),
@@ -347,7 +351,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           // Cards-only: the shops it can order from here, by card or with a test payment. A shop on a test network
           // is there to try USDC, so it isn't one of them.
           const shops = opts.cardsOnly
-            ? all.filter((s) => s.payments.card || (s.payments.test && !(s.payments.x402 && TEST_NETWORKS.has(s.payments.x402.network))))
+            ? all.filter((s) => s.payments.card || s.payments.cardTest || (s.payments.test && !(s.payments.x402 && TEST_NETWORKS.has(s.payments.x402.network))))
             : all;
           if (!shops.length) return reply("No agentPickup shops match. Try a wider radius, another place, or no query.", { shops: [] });
           const lines = shops.map((s) => {
@@ -355,6 +359,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               s.distanceKm !== undefined ? `${s.distanceKm} km` : null,
               s.openNow === true ? "open now" : s.openNow === false ? "closed now" : null,
               s.testOnly ? "test shop, no real money" : null,
+              opts.cardsOnly ? (s.payments.card ? "takes cards" : s.payments.cardTest ? "takes test cards" : null) : null,
               s.source?.kind === "listed" ? `listed by ${s.source.domain}` : null,
               s.order?.via === "ucp" ? "orders through its UCP checkout" : s.order?.via === "web" ? "orders on its own website" : null,
             ].filter(Boolean);
@@ -370,7 +375,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               openNow: s.openNow,
               testOnly: s.testOnly,
               payments: opts.cardsOnly
-                ? { card: s.payments.card, test: s.payments.test }
+                ? { card: s.payments.card || Boolean(s.payments.cardTest), ...(s.payments.cardTest ? { testCards: true } : {}), test: s.payments.test }
                 : { x402: s.payments.x402?.network ?? null, test: s.payments.test },
               listedBy: s.source?.kind === "listed" ? s.source.domain : null,
               // agentpickup: use get_shop and create_pickup_order. ucp or web: order there instead.
@@ -412,8 +417,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ...(cards ? ["cards, paid by the user on a checkout link"] : []),
         ...(payments.test ? ["test payments, with no money moving"] : []),
       ];
+      // Known hours: say whether it's open, so nobody orders from a closed shop.
+      const openNow = typeof data.openNow === "boolean" ? data.openNow : null;
+      const hoursNote =
+        openNow === true ? "Open now. " : openNow === false ? `Closed now${data.opensNext ? `; opens ${data.opensNext}` : ""}: orders aren't taken until then. ` : "";
       return reply(
         `${merchant.name}${merchant.location?.name ? `, collect at ${merchant.location.name}` : ""}. ` +
+          hoursNote +
           (!ways.length
             ? opts.cardsOnly
               ? "Doesn't take card payments here."
@@ -425,6 +435,8 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           shop,
           merchant: merchant.name,
           location: merchant.location,
+          openNow,
+          ...(openNow === false && data.opensNext ? { opensNext: data.opensNext } : {}),
           currency,
           items,
           ...(opts.cardsOnly ? {} : { x402: payments.x402 ?? null }),
@@ -625,7 +637,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const { order, checkoutUrl } = (await call(shop, `/api/orders/${encodeURIComponent(args.order_id)}`)) as { order: Order; checkoutUrl?: string };
       const words: Record<string, string> = {
         awaiting_payment: "is waiting for payment",
-        paid: "is paid and being prepared",
+        paid: order.acceptedAt ? "is paid and the shop is making it" : "is paid; the shop has it but hasn't started it yet",
         ready: "is ready to collect",
         collected: "has been collected",
         expired: "expired before anyone collected it",
@@ -703,7 +715,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       title: "Share agentPickup",
       description:
         "A QR code and link the user can share so friends can add agentPickup to Claude, ChatGPT or Grok and order too. " +
-        "Use when the user asks how to share agentPickup, invite friends, or get others using it. Name a shop to share it with that café picked.",
+        "Use when the user asks how to share agentPickup, invite friends, or get others using it. Name a shop to share it with that shop picked.",
       inputSchema: { ...shopArg },
       annotations: { title: "Share agentPickup", readOnlyHint: true, openWorldHint: false },
       _meta: SHARE_TOOL_META,
@@ -759,7 +771,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Start a group order",
       description:
-        "Start a group order (a coffee run) at a shop, when the user wants to order together with others now. Returns a code to " +
+        "Start a group order (a lunch or coffee run) at a shop, when the user wants to order together with others now. Returns a code to " +
         "share: each person's agent joins with it and pays for their own items. When it closes, the shop gets one combined order " +
         "and the organiser is emailed its pickup QR. To share agentPickup itself with a friend, use share_agentpickup instead.",
       inputSchema: {
