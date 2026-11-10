@@ -9,7 +9,7 @@ import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.5.1";
+export const VERSION = "0.5.2";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -134,7 +134,11 @@ share_agentpickup: when the user wants to share agentPickup itself, invite a fri
 QR and link for them. That isn't a group order: start_group_order is only for ordering together at one shop.
 Group orders (a lunch or coffee run): start_group_order gives a code to share; each person's agent calls join_group_order and
 pays its own share with pay_order; at closing time the shop gets one combined order and the organiser gets its QR.
-group_order_status shows who's in; close_group_order closes it early.`;
+group_order_status shows who's in; close_group_order closes it early.
+Questions about agentPickup itself rather than a shop: the user pays on the shop's own checkout, so the assistant and
+agentPickup never see the card; the money goes to the shop; the shop sees the user's name and order, not their email;
+an order nobody collects is refunded; shops join at https://agentpickup.app/connect, with their POS or with none.
+More at https://agentpickup.app/faq.`;
 
 const CARDS_INSTRUCTIONS = `agentPickup lets you order from local shops (cafés, bakeries, stores and more) for the user to collect in person.
 0. find_shops (when available): shops near the user that sell what they want. Pass a shop's shop_url to the other tools.
@@ -148,7 +152,11 @@ const CARDS_INSTRUCTIONS = `agentPickup lets you order from local shops (cafés,
    keeps itself up to date until it's collected. Otherwise give the user the pass link and pickup code. They show the
    QR at the counter, or say the code, to collect.
 get_pickup_pass (with the claim) fetches the pass again; order_status (with the claim) says whether it's ready.
-share_agentpickup: when the user wants to share agentPickup itself or invite a friend, shows a QR and link for them.`;
+share_agentpickup: when the user wants to share agentPickup itself or invite a friend, shows a QR and link for them.
+Questions about agentPickup itself rather than a shop: the user pays on the shop's own checkout, so the assistant and
+agentPickup never see the card; the money goes to the shop; the shop sees the user's name and order, not their email;
+an order nobody collects is refunded; shops join at https://agentpickup.app/connect, with their POS or with none.
+More at https://agentpickup.app/faq.`;
 
 /** x402 networks that move no real money (the server's directory uses the same list). */
 const TEST_NETWORKS = new Set(["eip155:84532"]);

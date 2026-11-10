@@ -225,12 +225,20 @@ button{font:inherit;cursor:pointer}
     var wait = document.hidden ? 60000 : state.status === "awaiting_payment" ? 5000 : 15000;
     timer = setTimeout(poll, wait);
   }
+  // A shop that has left, or an order that's gone, won't come back: stop asking. Anything else is tried again,
+  // up to five times in a row.
+  var failures = 0;
+  function failed(r) {
+    var text = (r && r.content && r.content[0] && r.content[0].text) || "";
+    if (/no such venue|not found|isn.t an agentpickup shop|no longer/i.test(text) || ++failures >= 5) stop();
+    else schedule();
+  }
   function poll() {
     var args = { order_id: state.orderId, claim: state.claim };
     if (state.shopUrl) args.shop_url = state.shopUrl;
     request("tools/call", { name: "order_status", arguments: args }).then(function (r) {
-      if (r && !r.isError) onResult(r); else schedule();
-    }, schedule);
+      if (r && !r.isError) { failures = 0; onResult(r); } else failed(r);
+    }, failed);
   }
   document.addEventListener("visibilitychange", function () { if (!document.hidden && state) { clearTimeout(timer); poll(); } });
 
