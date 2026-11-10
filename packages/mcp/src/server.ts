@@ -6,15 +6,18 @@ import QRCode from "qrcode";
 import { z } from "zod";
 import { CARD_META_KEY, CARD_MIME_TYPE, passCardHtml, type PassCard, type QrBits } from "./card.js";
 import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
+import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.5.1";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
 const CARD_TOOL_META = { ui: { resourceUri: CARD_URI }, "ui/resourceUri": CARD_URI };
 const SHARE_URI = `ui://agentpickup/share-${VERSION}.html`;
 const SHARE_TOOL_META = { ui: { resourceUri: SHARE_URI }, "ui/resourceUri": SHARE_URI };
+const MENU_URI = `ui://agentpickup/menu-${VERSION}.html`;
+const MENU_TOOL_META = { ui: { resourceUri: MENU_URI }, "ui/resourceUri": MENU_URI };
 
 export interface PickupMcpOptions {
   /** The agentPickup shop this server orders from. */
@@ -394,9 +397,12 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     "get_shop",
     {
       title: "See what a shop sells",
-      description: "What the shop sells (item ids and prices), where to collect, and which payments it takes.",
+      description:
+        "What the shop sells (item ids and prices, with photos, dietary labels, allergens and what's sold out), where to collect, and which payments it takes. " +
+        "In chat apps that show cards, the menu appears as a card with the photos.",
       inputSchema: { ...shopArg },
       annotations: { title: "See what a shop sells", readOnlyHint: true, openWorldHint: true },
+      _meta: MENU_TOOL_META,
     },
     guarded(async (args: { shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
@@ -413,12 +419,31 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ? ` On ${socials.map((s) => `${NETWORK_NAMES[s.network]}${s.network === "facebook" ? "" : ` as @${s.handle}`}`).join(", ")}.`
         : "";
       const currency = String(data.currency ?? "usd");
-      const items = (data.items as { id: string; name: string; priceCents: number; description?: string }[]).map((i) => ({
+      type Item = {
+        id: string;
+        name: string;
+        priceCents: number;
+        description?: string;
+        category?: string;
+        image?: string;
+        dietary?: string[];
+        allergens?: string[];
+        calories?: number;
+        soldOut?: boolean;
+      };
+      const items = (data.items as Item[]).map((i) => ({
         id: i.id,
         name: i.name,
         price: money(i.priceCents, currency),
         description: i.description,
+        ...(i.category ? { category: i.category } : {}),
+        ...(typeof i.image === "string" && i.image.startsWith("https://") ? { image: i.image } : {}),
+        ...(i.dietary?.length ? { dietary: i.dietary } : {}),
+        ...(i.allergens?.length ? { allergens: i.allergens } : {}),
+        ...(typeof i.calories === "number" ? { calories: i.calories } : {}),
+        ...(i.soldOut ? { soldOut: true } : {}),
       }));
+      const soldOut = items.filter((i) => i.soldOut).length;
       const payments = data.payments as { x402?: { network: string } | null; test?: boolean; card?: boolean; square?: { live: boolean } | null };
       const cards = Boolean(payments.square || payments.card);
       const ways = [
@@ -430,9 +455,18 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const openNow = typeof data.openNow === "boolean" ? data.openNow : null;
       const hoursNote =
         openNow === true ? "Open now. " : openNow === false ? `Closed now${data.opensNext ? `; opens ${data.opensNext}` : ""}: orders aren't taken until then. ` : "";
-      return reply(
+      const menu: MenuCard = {
+        v: 1,
+        shop: merchant.name,
+        ...(merchant.location?.name ? { location: merchant.location.name } : {}),
+        openNow,
+        ...(openNow === false && typeof data.opensNext === "string" ? { opensNext: data.opensNext } : {}),
+        items,
+      };
+      const answer = reply(
         `${merchant.name}${merchant.location?.name ? `, collect at ${merchant.location.name}` : ""}. ` +
           hoursNote +
+          (soldOut ? `${soldOut} item${soldOut === 1 ? " is" : "s are"} sold out right now. ` : "") +
           (!ways.length
             ? opts.cardsOnly
               ? "Doesn't take card payments here."
@@ -455,6 +489,8 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           test: Boolean(payments.test),
         },
       );
+      // The card draws the menu; hosts that pass _meta get it there too.
+      return { ...answer, structuredContent: { menu }, _meta: { [MENU_META_KEY]: menu } };
     }),
   );
 
@@ -722,6 +758,22 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
   );
 
   // ---------- sharing ----------
+  // The menu card loads item photos from the shop's own /img/<id>: its CSP names the shops' origins.
+  const photoOrigins = [...new Set([new URL(opts.shopUrl).origin, ...(opts.directoryUrl ? [new URL(opts.directoryUrl).origin] : [])])];
+  const menuMeta = { ui: { prefersBorder: false, csp: { resourceDomains: photoOrigins } } };
+  server.registerResource(
+    "shop-menu",
+    MENU_URI,
+    { title: "Shop menu", description: "A shop's items with photos, prices and dietary labels.", mimeType: CARD_MIME_TYPE, _meta: menuMeta },
+    async () => ({ contents: [{ uri: MENU_URI, mimeType: CARD_MIME_TYPE, text: menuCardHtml(VERSION), _meta: menuMeta }] }),
+  );
+  server.registerResource(
+    "shop-menu-earlier",
+    new ResourceTemplate("ui://agentpickup/menu-{version}.html", { list: undefined }),
+    { title: "Shop menu", mimeType: CARD_MIME_TYPE, _meta: menuMeta },
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: CARD_MIME_TYPE, text: menuCardHtml(VERSION), _meta: menuMeta }] }),
+  );
+
   server.registerResource(
     "share-agentpickup",
     SHARE_URI,
