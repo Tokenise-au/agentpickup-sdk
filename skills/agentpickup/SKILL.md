@@ -1,6 +1,6 @@
 ---
 name: agentpickup
-description: Order and pay for things to collect in person at real shops (cafés, restaurants, retail click and collect) through agentPickup, and hand the user the QR pickup pass. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, or mentions agentPickup.
+description: Order from real shops (cafés, restaurants, grocers, retail click and collect) through agentPickup for the user to collect in person, answer questions about a shop the menu doesn't (dietary needs, allergies, hours, parking), and hand the user the QR pickup pass. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, asks what a nearby shop has, or mentions agentPickup.
 ---
 
 # agentPickup
@@ -9,7 +9,7 @@ agentPickup shops take orders from AI agents. You order and pay for the user, th
 
 ## Choose how to connect
 
-- **The agentPickup MCP tools are available** (`find_shops`, `get_shop`, `create_pickup_order`, `pay_order`, `order_status`, `get_pickup_pass` and the group-order tools): use them. They cover every step below.
+- **The agentPickup MCP tools are available** (`find_shops`, `get_shop`, `ask_about_shop`, `create_pickup_order`, `pay_order`, `order_status`, `get_pickup_pass` and the group-order tools): use them. They cover every step below.
 - **They aren't:** use the HTTP routes below. Paying from a wallet needs an x402 client, such as Coinbase's agent wallet. Without one, use card checkout and give the user the link to pay on.
 
 ## Order for the user

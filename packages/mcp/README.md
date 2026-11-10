@@ -1,15 +1,18 @@
 # @agentpickup/mcp
 
-An MCP server for [agentPickup](https://agentpickup.app) shops. It lets an AI agent find
-pickup shops near its user, see what they sell, order, pay by card or in USDC over x402, and hand its user the
-QR they show at the counter to collect.
+An MCP server for [agentPickup](https://agentpickup.app): people order from real shops through their AI assistant and
+collect in person. It lets the assistant find shops near its user, see what they sell, answer questions the menu
+doesn't (dietary needs, allergies, hours, parking), order, and have the user pay by card on the shop's own checkout
+(or pay in USDC over x402 from an agent wallet). The order lands on the shop's own POS, and the user collects with the
+QR they show at the counter.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
 | `find_shops` | Shops near a point (`lat`/`lng`), in a suburb (`place`) or selling something (`query`), from the agentPickup directory: each one's `shop_url`, address, hours, open now, distance and matching items |
-| `get_shop` | Items and prices, the pickup location, and how the shop takes payment |
+| `get_shop` | Items and prices, the pickup location, whether it's open, its social accounts, and how the shop takes payment |
+| `ask_about_shop` | Questions the menu doesn't answer: dietary needs and allergies, reviews, opening hours, where it is, parking, wait times, prices. Answers from what the shop has said, and says plainly what it hasn't. Send the question without names or personal details: the shop sees only which topics people ask about |
 | `create_pickup_order` | Creates an order and returns a `claim` to keep with it. Needs the user's email, where the shop sends the receipt and pickup pass. A test shop marks it paid straight away, with no money moving. Where the shop takes cards, `payment: "card"` returns a checkout link for the user to pay on instead |
 | `pay_order` | Pays the order's x402 link from your wallet and returns the pass link. With no wallet set up, returns the price and pay link instead. For a card order, returns its checkout link |
 | `order_status` | Waiting for payment, paid, ready, collected or expired. With the order's `claim`, a paid order's pass comes back too |
@@ -17,7 +20,7 @@ QR they show at the counter to collect.
 | `start_group_order` | Starts a group order (a coffee run) with a closing time; returns the code to share and a key to close it early |
 | `join_group_order` | Adds the user's items to a group order by its code; pay the share with `pay_order` before it closes |
 | `group_order_status` | Who's in, what they ordered, who has paid, and whether the shop's order is ready or collected |
-| `share_agentpickup` | A QR and link for friends to add agentPickup to their assistant (as a card where the chat shows cards), for everyone or with one café picked |
+| `share_agentpickup` | A QR and link for friends to add agentPickup to their assistant (as a card where the chat shows cards), for everyone or with one shop picked |
 | `close_group_order` | Closes a group order early, as its organiser; the shop gets one combined order and the organiser its QR |
 
 ## The pickup pass card

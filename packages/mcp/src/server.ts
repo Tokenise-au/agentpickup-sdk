@@ -401,8 +401,17 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     guarded(async (args: { shop_url?: string }) => {
       const shop = await shopFor(args.shop_url);
       const data = await call(shop, "/api/catalog");
-      const merchant = data.merchant as { name: string; location?: { name?: string; address?: string; hours?: string } };
+      const merchant = data.merchant as {
+        name: string;
+        location?: { name?: string; address?: string; hours?: string };
+        socials?: { network: string; handle: string; url: string }[];
+      };
       rememberShop(shop, merchant.name, merchant.location);
+      const NETWORK_NAMES: Record<string, string> = { instagram: "Instagram", x: "X", facebook: "Facebook", tiktok: "TikTok" };
+      const socials = (merchant.socials ?? []).filter((s) => NETWORK_NAMES[s.network]);
+      const followNote = socials.length
+        ? ` On ${socials.map((s) => `${NETWORK_NAMES[s.network]}${s.network === "facebook" ? "" : ` as @${s.handle}`}`).join(", ")}.`
+        : "";
       const currency = String(data.currency ?? "usd");
       const items = (data.items as { id: string; name: string; priceCents: number; description?: string }[]).map((i) => ({
         id: i.id,
@@ -430,11 +439,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               : "Doesn't take agent payments."
             : ways.length === 1 && payments.test
               ? "A test shop: orders are marked paid without money moving."
-              : `Takes ${ways.join("; ")}.`),
+              : `Takes ${ways.join("; ")}.`) +
+          followNote,
         {
           shop,
           merchant: merchant.name,
           location: merchant.location,
+          ...(socials.length ? { socials } : {}),
           openNow,
           ...(openNow === false && data.opensNext ? { opensNext: data.opensNext } : {}),
           currency,
@@ -444,6 +455,30 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
           test: Boolean(payments.test),
         },
       );
+    }),
+  );
+
+  server.registerTool(
+    "ask_about_shop",
+    {
+      title: "Ask about a shop",
+      description:
+        "Answer a question about a shop that its menu doesn't: dietary needs and allergies (gluten-free, vegan, nuts), reviews, " +
+        "opening hours, where it is, parking, wait times, prices. Use it whenever the user asks something like that about a shop. " +
+        "Send the question in a few words, without names or other personal details. It answers from what the shop has said, " +
+        "says plainly what the shop hasn't, and tells the shop which topics people ask about (never the question itself).",
+      inputSchema: { ...shopArg, question: z.string().min(2).max(300).describe('The question in a few words, e.g. "gluten-free options?" or "is there parking?"') },
+      annotations: { title: "Ask about a shop", readOnlyHint: true, openWorldHint: true },
+    },
+    guarded(async (args: { shop_url?: string; question: string }) => {
+      const shop = await shopFor(args.shop_url);
+      const data = await call(shop, "/api/question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: args.question }),
+      });
+      const answers = (data.answers as { topic: string; text: string }[] | undefined) ?? [];
+      return reply(`${String(data.shop ?? "The shop")}: ${answers.map((a) => a.text).join(" ") || "it hasn't said."}`, { shop, topics: data.topics, answers });
     }),
   );
 
@@ -736,7 +771,8 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
             type: "text" as const,
             text:
               `Share this link: ${links.url}. A friend opens it (or scans its QR off the user's screen), adds agentPickup to Claude, ChatGPT or Grok, ` +
-              `then just asks for their usual${name ? ` at ${name}` : ""}. ${links.sharePageUrl} opens the phone's share sheet and has a sticker to print.`,
+              `then just asks for their usual${name ? ` at ${name}` : ""}. ${links.sharePageUrl} opens the phone's share sheet and has a sticker to print. ` +
+              `News and new shops: @agentPickup on X, https://x.com/agentPickup.`,
           },
         ],
         structuredContent: { share: card },

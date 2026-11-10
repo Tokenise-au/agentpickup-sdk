@@ -1,19 +1,33 @@
 # agentPickup SDK
 
-The open parts of [agentPickup](https://agentpickup.app): click and collect for people and their AI agents. An agent
-orders and pays at a real shop, and the person collects in person with a signed QR that staff scan at the counter.
+[agentPickup](https://agentpickup.app) lets people order from real shops through their AI assistant (Claude, ChatGPT,
+Grok) and collect in person. The assistant finds the shop and shows its menu. The person pays by card on the shop's
+own checkout, or an agent pays in USDC. The order lands on the shop's own POS next to its other orders, and the person
+collects with a signed QR at the counter.
+
+**For shops:** connect your POS (Square today, more systems on the way) and AI assistants can order from you. You keep
+your POS, your staff work as they do now, and the money goes straight to you. A dashboard shows your sales and what
+people ask their assistants near you: searches, dietary needs and allergies, and questions about your shop. Sign up at
+[agentpickup.app/connect](https://agentpickup.app/connect).
+
+**For people:** add agentPickup to your assistant at [agentpickup.app/add](https://agentpickup.app/add), then ask for
+what you want.
+
+**For agents and developers:** this repository holds the open parts. The hosted service (shops, POS connections,
+payments, the dashboard) runs at agentpickup.app and isn't published as a package.
 
 | | What it is | Licence |
 |---|---|---|
-| [`packages/core`](packages/core) · [`@agentpickup/core`](https://www.npmjs.com/package/@agentpickup/core) | The pickup pass: sign and check the QR a customer shows at the counter. The format is in [SPEC.md](SPEC.md) | Apache-2.0 |
-| [`packages/mcp`](packages/mcp) · [`@agentpickup/mcp`](https://www.npmjs.com/package/@agentpickup/mcp) | The MCP server agents use to find shops, order, pay and fetch the pass | FSL-1.1-ALv2 |
+| [`packages/core`](packages/core) · [`@agentpickup/core`](https://www.npmjs.com/package/@agentpickup/core) | The pickup pass: sign and check the QR a customer shows at the counter (Ed25519). The format is in [SPEC.md](SPEC.md) | Apache-2.0 |
+| [`packages/mcp`](packages/mcp) · [`@agentpickup/mcp`](https://www.npmjs.com/package/@agentpickup/mcp) | The MCP server assistants use to find shops, see menus, ask about a shop, order, pay and fetch the pass, and run group orders | FSL-1.1-ALv2 |
 | [`skills/agentpickup`](skills/agentpickup/SKILL.md) | The same steps as an agent skill | Apache-2.0 |
 | [SPEC.md](SPEC.md) | The pickup pass format, v1 | Apache-2.0 |
 
 ## Use it
 
-- **Agents:** connect to `https://agentpickup.app/mcp` (streamable HTTP), or run `npx -y @agentpickup/mcp`. It's in
-  the official MCP Registry as `io.github.dav3trad3r/agentpickup`.
+- **Assistants:** connect to `https://agentpickup.app/mcp` (streamable HTTP), or run `npx -y @agentpickup/mcp`. It's in
+  the official MCP Registry as `io.github.dav3trad3r/agentpickup`. Connector directories that don't take crypto use
+  `https://agentpickup.app/mcp/cards`: cards and test payments only, paid on the shop's own checkout.
 - **Agents that use skills:** `npx skills add Tokenise-au/agentpickup-sdk`.
 - **Guides for agents:** [AGENTS.md](https://agentpickup.app/AGENTS.md) and [llms.txt](https://agentpickup.app/llms.txt).
 - **Checking a pass:**
@@ -27,10 +41,11 @@ verifyPass(token, [key]); // { ok: true, claims } or { ok: false, reason: "malfo
 toJwks([key]);            // what a shop publishes at /.well-known/collect-keys.json
 ```
 
-## Shops
+## How a shop is paid
 
-Shops sign up at [agentpickup.app/connect](https://agentpickup.app/connect) and keep their own POS and payments. The
-hosted service (shops, POS connections and payments) isn't in this repository.
+Card payments go through the shop's own POS account, so the money never passes through agentPickup. Where a shop adds
+a wallet, agents can also pay in USDC over [x402](https://x402.org), straight to the shop's wallet. Each order's QR is
+signed by the shop's key, and staff scan it (or mark the order in their POS) when it's collected.
 
 ## Development
 

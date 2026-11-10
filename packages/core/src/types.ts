@@ -22,6 +22,8 @@ export interface OrderItem {
   unitCents: number;
   /** Shown to staff beside the item, e.g. "for Sam" on a group order's combined order. */
   note?: string;
+  /** The menu item's category when it was ordered, for the shop's insights. */
+  category?: string;
 }
 
 export interface Order {
