@@ -33,7 +33,7 @@
         },
         {
           "name": "AGENTPICKUP_WALLET_KEY",
-          "description": "EVM private key that pays over x402. Without it, pay_order only quotes",
+          "description": "Private key of a wallet used only for this, holding just what you mean to spend in USDC. It pays over x402, up to AGENTPICKUP_MAX_PER_ORDER per order. Without it, pay_order only quotes",
           "isRequired": false,
           "isSecret": true,
           "format": "string"

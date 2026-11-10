@@ -63,7 +63,7 @@ Or run it locally against any agentPickup shop, with your own wallet:
 | Setting | Default | |
 |---|---|---|
 | `AGENTPICKUP_SHOP_URL` | the demo shop | The shop to order from. Tool calls can also name another shop with `shop_url` |
-| `AGENTPICKUP_WALLET_KEY` | none | An EVM private key holding USDC. Without it, `pay_order` only quotes |
+| `AGENTPICKUP_WALLET_KEY` | none | The private key of a wallet used only for this, holding just the USDC you mean to spend: never your main wallet. Without it, `pay_order` only quotes |
 | `AGENTPICKUP_MAX_PER_ORDER` | `$25` | The most the wallet pays for one order |
 | `AGENTPICKUP_NETWORKS` | `eip155:84532` | Networks the wallet may pay on. Base Sepolia (test USDC) unless you add `eip155:8453` for Base mainnet |
 | `AGENTPICKUP_DIRECTORY_URL` | `https://agentpickup.app/directory/v1/shops` | Where `find_shops` searches. `off` leaves the tool out |
