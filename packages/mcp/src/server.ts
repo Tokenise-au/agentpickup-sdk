@@ -9,7 +9,7 @@ import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.7.0";
+export const VERSION = "0.7.1";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -214,6 +214,17 @@ More at https://agentpickup.app/faq.`;
 /** x402 networks that move no real money (the server's directory uses the same list). */
 const TEST_NETWORKS = new Set(["eip155:84532"]);
 
+
+/** A time as the shop reads it: "Wed 11 Nov, 5:30 pm (Australia/Brisbane)". */
+function shopTime(ms: number, timeZone?: string): string {
+  const zone = timeZone && /^[A-Za-z_+\-\/0-9]{1,64}$/.test(timeZone) ? timeZone : undefined;
+  try {
+    const text = new Intl.DateTimeFormat("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: zone }).format(new Date(ms));
+    return zone ? `${text} (${zone})` : new Date(ms).toISOString();
+  } catch {
+    return new Date(ms).toISOString();
+  }
+}
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100);
 
@@ -376,7 +387,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     .max(40)
     .optional()
     .describe(
-      'When the user wants to collect, if not as soon as possible: a time in the shop\'s own time like "17:30" or "5:30pm" ' +
+      'When the user wants to collect, if not as soon as possible: a time in the shop\'s own time zone (get_shop gives its local time) like "17:30" or "5:30pm" ' +
         "(today, or tomorrow once it has passed), or an ISO time. It must be when the shop is open, within 7 days. Leave it out for as soon as possible.",
     );
   const dietaryArg = z
@@ -612,8 +623,10 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       ];
       // Known hours: say whether it's open, so nobody orders from a closed shop.
       const openNow = typeof data.openNow === "boolean" ? data.openNow : null;
+      const localTime = data.localTime as { now?: string; timeZone?: string } | undefined;
       const hoursNote =
         openNow === true ? "Open now. " : openNow === false ? `Closed now${data.opensNext ? `; opens ${data.opensNext}` : ""}: orders aren't taken until then. ` : "";
+      const clockNote = localTime?.now && localTime.timeZone ? ` It's ${localTime.now} there (${localTime.timeZone}); a pickup_at clock time is in the shop's time.` : "";
       const menu: MenuCard = {
         v: 1,
         shop: merchant.name,
@@ -640,6 +653,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
               : `Takes ${ways.join("; ")}.`) +
           followNote +
           collectingNote +
+          clockNote +
           // Hosts that draw cards show the menu as one: a second copy of it in the reply only clutters the chat.
           " Where the user sees the menu card, it already shows the items, prices, photos and options: don't list or draw the menu again; answer what they asked or ask what they'd like.",
         {
@@ -732,6 +746,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         payments: { x402?: unknown; test?: boolean; card?: boolean; square?: unknown };
         merchant?: { name?: string; location?: { name?: string; address?: string } };
         dietaryNotes?: boolean;
+        localTime?: { timeZone?: string };
       };
       rememberShop(shop, catalog.merchant?.name, catalog.merchant?.location);
       rememberLooks(shop, catalog as never);
@@ -776,7 +791,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       const what =
         `${order.items.map((i) => `${i.qty}× ${i.name}${i.options?.length ? ` (${optionNames(i)})` : ""}`).join(", ")}, ${money(order.totalCents, order.currency)}` +
         (order.dietaryNote ? `. Dietary note for the shop: ${order.dietaryNote}` : "") +
-        (order.pickupAt ? `. For pickup at ${new Date(order.pickupAt).toISOString()}` : "");
+        (order.pickupAt ? `. For pickup at ${shopTime(order.pickupAt, catalog.localTime?.timeZone)}` : "");
       const keep =
         (claim ? " Keep the claim: get_pickup_pass and order_status take it." : "") +
         (noteDropped ? " This shop doesn't take dietary notes here: tell the user to tell staff at the counter." : "");
