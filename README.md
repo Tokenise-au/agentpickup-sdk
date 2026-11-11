@@ -1,12 +1,22 @@
 # agentPickup SDK
 
-[agentPickup](https://agentpickup.app) lets people order from real shops through their AI assistant (Claude, ChatGPT,
-Grok) and collect in person. The assistant finds the shop and shows its menu. The person pays by card on the shop's
-own checkout, or an agent pays in USDC. The order lands on the shop's own POS next to its other orders, and the person
-collects with a signed QR at the counter.
+[agentPickup](https://agentpickup.app) is the commerce and fulfilment infrastructure that lets AI agents buy from
+physical businesses. Agents find businesses, read their catalogues, ask questions and place orders. The customer pays
+on the business's own checkout, or the agent pays directly. The order arrives in the system the business already runs,
+and the customer collects in person with a signed QR. It works in any industry and with any point of sale, and the
+money goes straight to the business.
 
-**For shops:** connect your POS (Square today, more systems on the way) and AI assistants can order from you. You keep
-your POS, your staff work as they do now, and the money goes straight to you. A dashboard shows your sales and what
+It has three parts:
+
+- **Discovery and ordering for agents:** a public directory, each business's catalogue, and ordering and checkout over
+  MCP (Claude, ChatGPT, Grok), x402, MPP, UCP and ACP.
+- **The business's own systems:** orders land on its point of sale next to its other orders (Square today, more
+  systems on the way), or on the agentPickup dashboard for a business with no POS.
+- **Verified collection:** a signed pickup pass that staff scan, which anyone can check offline against the business's
+  published keys.
+
+**For businesses:** connect your point of sale, or start with no POS, and AI agents can order from you. Your staff
+work as they do now, and the money goes straight to you. A dashboard shows your sales and what
 people ask their assistants near you: searches, dietary needs and allergies, and questions about your shop. Sign up at
 [agentpickup.app/connect](https://agentpickup.app/connect).
 
@@ -19,7 +29,7 @@ payments, the dashboard) runs at agentpickup.app and isn't published as a packag
 | | What it is | Licence |
 |---|---|---|
 | [`packages/core`](packages/core) · [`@agentpickup/core`](https://www.npmjs.com/package/@agentpickup/core) | The pickup pass: sign and check the QR a customer shows at the counter (Ed25519). The format is in [SPEC.md](SPEC.md) | Apache-2.0 |
-| [`packages/mcp`](packages/mcp) · [`@agentpickup/mcp`](https://www.npmjs.com/package/@agentpickup/mcp) | The MCP server assistants use to find shops, see menus, ask about a shop, order, pay and fetch the pass, and run group orders | FSL-1.1-ALv2 |
+| [`packages/mcp`](packages/mcp) · [`@agentpickup/mcp`](https://www.npmjs.com/package/@agentpickup/mcp) | The MCP server assistants use to find businesses, read their catalogues, ask about one, order (now or for later), pay, cancel, fetch the pass, and run group orders | FSL-1.1-ALv2 |
 | [`skills/agentpickup`](skills/agentpickup/SKILL.md) | The same steps as an agent skill | Apache-2.0 |
 | [SPEC.md](SPEC.md) | The pickup pass format, v1 | Apache-2.0 |
 
