@@ -9,7 +9,7 @@ import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.7.1";
+export const VERSION = "0.7.2";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -542,7 +542,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "See what a shop sells",
       description:
-        "What the shop sells (item ids and prices, with photos, dietary labels, allergens and what's sold out), where to collect, and which payments it takes. " +
+        "What the shop sells (item ids and prices, with photos, dietary labels, allergens, what's sold out, and what's in stock where the shop's POS counts it), where to collect, and which payments it takes. " +
         "In chat apps that show cards, the menu appears as a card with the photos.",
       inputSchema: { ...shopArg },
       annotations: { title: "See what a shop sells", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
@@ -582,6 +582,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         allergens?: string[];
         calories?: number;
         soldOut?: boolean;
+        inStock?: boolean;
         options?: OptionGroup[];
       };
       const items = (data.items as Item[]).map((i) => ({
@@ -595,6 +596,8 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
         ...(i.allergens?.length ? { allergens: i.allergens } : {}),
         ...(typeof i.calories === "number" ? { calories: i.calories } : {}),
         ...(i.soldOut ? { soldOut: true } : {}),
+        // In stock where the shop's POS counts it; no word either way where it doesn't.
+        ...(i.inStock && !i.soldOut ? { inStock: true } : {}),
         // Pass the chosen ids with the item to create_pickup_order.
         ...(i.options?.length
           ? {
