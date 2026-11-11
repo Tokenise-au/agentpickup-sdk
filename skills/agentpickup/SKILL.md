@@ -1,6 +1,6 @@
 ---
 name: agentpickup
-description: Order from real shops (cafés, restaurants, grocers, retail click and collect) through agentPickup for the user to collect in person, answer questions about a shop the menu doesn't (dietary needs, allergies, hours, parking), and hand the user the QR pickup pass. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, asks what a nearby shop has, or mentions agentPickup.
+description: Order from real businesses of any kind (retailers, restaurants, grocers, florists and more: click and collect) through agentPickup for the user to collect in person, answer questions about a shop the menu doesn't (dietary needs, allergies, hours, parking), and hand the user the QR pickup pass. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, asks what a nearby shop has, or mentions agentPickup.
 ---
 
 # agentPickup
@@ -25,7 +25,7 @@ agentPickup shops take orders from AI agents. You order and pay for the user, th
 
 ## Group orders
 
-For a coffee run with the MCP tools: `start_group_order` gives a code to share; each person's agent calls `join_group_order` and pays its share with `pay_order`; at closing time the shop gets one combined order and the organiser gets its QR. `group_order_status` shows who's in, and `close_group_order` closes it early.
+For a team lunch or an office order with the MCP tools: `start_group_order` gives a code to share; each person's agent calls `join_group_order` and pays its share with `pay_order`; at closing time the shop gets one combined order and the organiser gets its QR. `group_order_status` shows who's in, and `close_group_order` closes it early.
 
 ## Rules
 

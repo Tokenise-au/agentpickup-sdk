@@ -18,11 +18,17 @@ export interface MenuCardItem {
   allergens?: string[];
   calories?: number;
   soldOut?: boolean;
+  /** "Milk: Full cream, Oat milk +$0.80", one per option group. */
+  options?: string[];
 }
 
 export interface MenuCard {
   v: 1;
   shop: string;
+  /** The shop's logo, from its own /img/ address. */
+  logo?: string;
+  /** The shop's colour, for the letter tile when it has no logo. */
+  brandColor?: string;
   /** Where to collect. */
   location?: string;
   /** null when the shop gave no hours. */
@@ -43,6 +49,10 @@ html,body{margin:0;padding:0;background:transparent}
 body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif);padding:2px;-webkit-font-smoothing:antialiased}
 .card{box-sizing:border-box;max-width:560px;margin:0 auto;background:var(--bg);color:var(--text);border-radius:18px;padding:16px 16px 12px}
 .head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.who{display:flex;gap:10px;align-items:center;min-width:0}
+.logo{width:44px;height:44px;border-radius:11px;object-fit:cover;flex:none;background:var(--panel)}
+.logo.none{display:flex;align-items:center;justify-content:center;font-weight:750;font-size:19px;color:#fff}
+.opts{color:var(--dim);font-size:12px;margin-top:4px;line-height:1.4}
 h1{margin:0;font-size:20px;line-height:1.2;font-weight:750}
 .where{color:var(--dim);font-size:13px;margin-top:2px}
 .open{font-size:12px;font-weight:600;border-radius:999px;padding:4px 9px;border:1px solid var(--line);white-space:nowrap;color:var(--muted)}
@@ -113,6 +123,14 @@ h2{margin:14px 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercas
   }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   function safeImg(u) { return typeof u === "string" && /^https:\/\//.test(u) ? u : ""; }
+  function safeColor(c) { return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : "#262a30"; }
+  function logo() {
+    var letter = esc((state.shop || "?").charAt(0).toUpperCase());
+    var src = safeImg(state.logo);
+    return src
+      ? '<img class="logo" src="' + esc(src) + '" alt="" data-letter="' + letter + '" data-bg="' + safeColor(state.brandColor) + '">'
+      : '<span class="logo none" style="background:' + safeColor(state.brandColor) + '">' + letter + "</span>";
+  }
   function item(i) {
     var img = safeImg(i.image);
     var letter = esc((i.name || "?").charAt(0));
@@ -124,6 +142,7 @@ h2{margin:14px 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercas
     if (typeof i.calories === "number") badges.push('<span class="b">' + esc(i.calories) + " kcal</span>");
     return '<div class="item' + (i.soldOut ? " soldout" : "") + '">' + ph + '<div class="body"><div class="top"><span class="name">' + esc(i.name) +
       '</span><span class="price">' + esc(i.price) + "</span></div>" + (i.description ? '<div class="desc">' + esc(i.description) + "</div>" : "") +
+      (i.options && i.options.length ? '<div class="opts">' + i.options.map(esc).join("<br>") + "</div>" : "") +
       (badges.length ? '<div class="badges">' + badges.join("") + "</div>" : "") + "</div></div>";
   }
   function render() {
@@ -133,15 +152,16 @@ h2{margin:14px 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercas
     items.forEach(function (i) { var k = i.category || ""; if (!(k in byName)) { byName[k] = []; groups.push(k); } byName[k].push(i); });
     var open = state.openNow === true ? '<span class="open yes">Open now</span>' : state.openNow === false ? '<span class="open no">Closed' + (state.opensNext ? ", opens " + esc(state.opensNext) : "") + "</span>" : "";
     root.innerHTML =
-      '<div class="card"><div class="head"><div><h1>' + esc(state.shop) + "</h1>" + (state.location ? '<div class="where">Collect at ' + esc(state.location) + "</div>" : "") + "</div>" + open + "</div>" +
+      '<div class="card"><div class="head"><div class="who">' + logo() + "<div><h1>" + esc(state.shop) + "</h1>" + (state.location ? '<div class="where">Collect at ' + esc(state.location) + "</div>" : "") + "</div></div>" + open + "</div>" +
       groups.map(function (g) { return (groups.length > 1 && g ? "<h2>" + esc(g) + "</h2>" : "") + byName[g].map(item).join(""); }).join("") +
       (state.items.length > SHOW ? '<p class="more">And ' + (state.items.length - SHOW) + " more on the menu.</p>" : "") +
       '<p class="note">Ask for what you want and your assistant orders it. You pay, then collect with a QR.</p></div>';
     // A photo that won't load (another host, or gone) becomes the item's letter.
-    Array.prototype.forEach.call(root.querySelectorAll("img.ph"), function (im) {
+    Array.prototype.forEach.call(root.querySelectorAll("img.ph, img.logo"), function (im) {
       im.addEventListener("error", function () {
         var span = document.createElement("span");
-        span.className = "ph none";
+        span.className = im.classList.contains("logo") ? "logo none" : "ph none";
+        if (im.getAttribute("data-bg")) span.style.background = im.getAttribute("data-bg");
         span.textContent = im.getAttribute("data-letter") || "?";
         im.replaceWith(span);
         reportSize();

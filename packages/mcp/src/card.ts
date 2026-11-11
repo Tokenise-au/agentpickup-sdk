@@ -29,6 +29,10 @@ export interface PassCard {
   orderId: string;
   shopUrl?: string;
   shopName?: string;
+  /** The shop's logo, from its own /img/ address (the card's CSP names the shop's origin). */
+  logo?: string;
+  /** The shop's colour, for the letter tile when it has no logo. */
+  brandColor?: string;
   /** Where to collect: the shop's address, or its counter's name. */
   where?: string;
   /** Lets the card call order_status itself while the order moves along. */
@@ -39,8 +43,10 @@ export interface PassCard {
   rail?: string;
   /** "2× Flat white, 1× Croissant" */
   items?: string;
-  /** The order's lines with their prices, for the card's receipt while it's unpaid. */
-  lines?: { qty: number; name: string; price?: string }[];
+  /** The order's lines with their prices, photos and chosen options, for the card's receipt while it's unpaid. */
+  lines?: { qty: number; name: string; price?: string; image?: string; options?: string }[];
+  /** Present where the shop takes dietary notes: the customer's note, or null when they added none. */
+  dietary?: { note: string | null };
   total?: string;
   collectBy?: number | null;
   collectedAt?: number | null;
@@ -49,6 +55,8 @@ export interface PassCard {
   pickupCode?: string | null;
   /** The pass's QR, once it's paid. */
   qr?: QrBits;
+  /** When the customer will collect (Unix ms); absent is as soon as possible. */
+  pickupAt?: number;
   /** The add page's share mode, for "Invite a friend". */
   inviteUrl?: string;
 }
@@ -90,6 +98,9 @@ html,body{margin:0;padding:0;background:transparent}
 body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif);color:var(--text);-webkit-font-smoothing:antialiased;padding:2px}
 .card{box-sizing:border-box;max-width:380px;margin:0 auto;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:16px 18px 14px}
 .head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.who{display:flex;gap:10px;align-items:center;min-width:0}
+.logo{width:40px;height:40px;border-radius:10px;object-fit:cover;flex:none;background:var(--surface);border:1px solid var(--line);box-sizing:border-box}
+.logo.none{display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;color:#fff;border:0}
 .shop{font-weight:650;font-size:16px;margin:0;letter-spacing:-.01em}
 .sub{font-size:13px;color:var(--muted);margin:2px 0 0}
 .pill{font-size:12px;line-height:1;padding:6px 10px;border-radius:999px;white-space:nowrap;background:var(--surface);color:var(--muted)}
@@ -98,6 +109,14 @@ body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI
 .pill.ready{background:var(--lime);color:var(--ink);font-weight:650}
 .lines{margin:14px 0 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:8px 0;font-size:14px}
 .line{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.line.item{align-items:center;gap:10px;padding:5px 0}
+.line.item .what{flex:1;min-width:0;display:flex;align-items:center;gap:10px}
+.thumb{width:36px;height:36px;border-radius:8px;object-fit:cover;flex:none;background:var(--surface)}
+.thumb.none{display:flex;align-items:center;justify-content:center;color:var(--faint);font-weight:700;font-size:14px}
+.opts{display:block;font-size:12px;color:var(--muted);margin-top:1px}
+.diet{font-size:13px;margin:10px 0 0;padding:8px 12px;border-radius:12px;background:var(--surface);line-height:1.4}
+.diet b{font-weight:650}
+.diet.none{color:var(--muted)}
 .line span:first-child{min-width:0;overflow-wrap:anywhere}
 .line.total{font-weight:650}
 .wrap{position:relative;border-radius:14px;margin-top:14px}
@@ -120,7 +139,7 @@ body{font-family:var(--font-sans,ui-sans-serif,system-ui,-apple-system,"Segoe UI
 .step{flex:1;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--faint)}
 .step i{width:9px;height:9px;border-radius:50%;border:1.5px solid currentColor;box-sizing:border-box;flex:none}
 .step.past{color:var(--ok)}.step.past i{background:currentColor}
-.step.now{color:var(--text);font-weight:650}.step.now i{background:var(--lime);border-color:var(--lime)}
+.step.now{color:var(--text)}.step.now i{background:transparent;border:2px solid var(--lime)}
 .msg{font-size:13px;color:var(--muted);margin:10px 0 0;line-height:1.45}
 .test{font-size:12px;color:var(--muted);margin:6px 0 0}
 button{font:inherit;cursor:pointer}
@@ -129,8 +148,12 @@ button{font:inherit;cursor:pointer}
 .link{background:none;border:none;padding:0;color:var(--muted);text-decoration:underline;font-size:13px}
 .actions{margin-top:10px}
 .foot{font-size:11px;color:var(--faint);margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.brand{display:inline-flex;align-items:center;gap:6px}
+.brand svg{width:16px;height:16px;display:block}
+.card.pending{border-color:rgba(181,242,61,.5);animation:glow 2.6s ease-in-out infinite}
+@keyframes glow{0%,100%{border-color:rgba(181,242,61,.4);box-shadow:inset 0 0 0 1px rgba(181,242,61,.12),inset 0 0 16px 0 rgba(181,242,61,.05)}50%{border-color:rgba(181,242,61,.95);box-shadow:inset 0 0 0 1px rgba(181,242,61,.4),inset 0 0 26px 0 rgba(181,242,61,.14)}}
 .foot .link{font-size:12px;color:var(--muted)}
-@media (prefers-reduced-motion:reduce){.pour{transition:none}.wrap.ready::after{animation:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.pour{transition:none}.wrap.ready::after{animation:none;opacity:1}.card.pending{animation:none;border-color:rgba(181,242,61,.8);box-shadow:inset 0 0 0 1px rgba(181,242,61,.3),inset 0 0 20px 0 rgba(181,242,61,.1)}}
 </style>
 </head>
 <body>
@@ -271,40 +294,67 @@ button{font:inherit;cursor:pointer}
       case "ready": return "Ready at the counter. Show the QR or say the code.";
       case "collected": return "Enjoy. The receipt is in your email.";
       case "expired": return "This order expired before anyone collected it.";
-      case "cancelled": return "This order was cancelled.";
+      case "cancelled": return "This order was cancelled. Anything paid goes back the way it was paid.";
       default: return "";
     }
   }
-  function steps(status) {
-    var first = status === "awaiting_payment" ? "Pay" : "Paid";
-    var at = { awaiting_payment: 0, paid: 1, ready: 1, collected: 3 }[status];
-    if (at === undefined) return "";
-    return '<div class="steps">' + [first, "Ready", "Collected"].map(function (name, i) {
-      var cls = i < at || (status === "ready" && i === 1) ? " past" : i === at ? " now" : "";
-      if (status === "ready" && i === 2) cls = " now";
+  // Pay (or Paid), Preparing, Ready, Collected: the steps it has reached are filled, and the next one is a hollow
+  // lime ring, so a paid order never reads as ready.
+  function steps(s) {
+    var status = s.status || "awaiting_payment";
+    var reached = { awaiting_payment: 0, paid: s.accepted ? 2 : 1, ready: 3, collected: 4 }[status];
+    if (reached === undefined) return "";
+    return '<div class="steps">' + [status === "awaiting_payment" ? "Pay" : "Paid", "Preparing", "Ready", "Collected"].map(function (name, i) {
+      var cls = i < reached ? " past" : i === reached ? " now" : "";
       return '<span class="step' + cls + '"><i></i>' + name + "</span>";
     }).join("") + "</div>";
+  }
+  var MARK = '<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0a0b0d"/><rect x="7" y="7" width="7" height="7" rx="1.5" fill="#fff"/><rect x="18" y="7" width="7" height="7" rx="1.5" fill="#fff"/><rect x="7" y="18" width="7" height="7" rx="1.5" fill="#fff"/><path d="M18.5 21.5l2.5 2.5 4.5-5" fill="none" stroke="#b5f23d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function safeImg(u) { return typeof u === "string" && /^https:\/\//.test(u) ? u : ""; }
+  function safeColor(c) { return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : "#0a0b0d"; }
+  // A photo that fails to load turns back into its letter tile (see render).
+  function logo(s) {
+    var letter = esc((s.shopName || "?").charAt(0).toUpperCase());
+    var tile = '<span class="logo none" style="background:' + safeColor(s.brandColor) + '">' + letter + "</span>";
+    var src = safeImg(s.logo);
+    return src ? '<img class="logo" src="' + esc(src) + '" alt="" data-tile="' + esc(tile) + '">' : tile;
+  }
+  function thumb(l) {
+    var tile = '<span class="thumb none">' + esc((l.name || "?").charAt(0).toUpperCase()) + "</span>";
+    var src = safeImg(l.image);
+    return src ? '<img class="thumb" src="' + esc(src) + '" alt="" data-tile="' + esc(tile) + '">' : tile;
+  }
+  function diet(s) {
+    if (!s.dietary) return "";
+    return s.dietary.note
+      ? '<p class="diet"><b>Dietary notes:</b> ' + esc(s.dietary.note) + "</p>"
+      : '<p class="diet none"><b>Dietary notes:</b> none added</p>';
   }
   function view(s) {
     var status = s.status || "awaiting_payment";
     var unpaid = status === "awaiting_payment";
     var live = status === "paid" || status === "ready";
-    var h = '<div class="card"><div class="head"><div>';
+    var h = '<div class="card' + (unpaid && s.checkoutUrl ? " pending" : "") + '"><div class="head"><div class="who">' + logo(s) + "<div>";
     h += '<p class="shop">' + esc(s.shopName || "Your pickup order") + "</p>";
     var sub = unpaid ? (s.where ? "Pickup at " + s.where : "") : (s.items ? s.items + (s.total ? " · " + s.total : "") : "");
     if (sub) h += '<p class="sub">' + esc(sub) + "</p>";
-    h += '</div><span class="pill ' + esc(status) + '">' + esc(LABELS[status] || status) + "</span></div>";
+    h += '</div></div><span class="pill ' + esc(status) + '">' + esc(LABELS[status] || status) + "</span></div>";
 
     if (unpaid) {
       var lines = s.lines && s.lines.length ? s.lines : null;
       if (lines || s.total) {
         h += '<div class="lines">';
-        if (lines) lines.forEach(function (l) { h += '<div class="line"><span>' + esc(l.qty + "× " + l.name) + "</span><span>" + esc(l.price || "") + "</span></div>"; });
+        if (lines) lines.forEach(function (l) {
+          h += '<div class="line item"><span class="what">' + thumb(l) + "<span>" + esc(l.qty + "× " + l.name) +
+            (l.options ? '<span class="opts">' + esc(l.options) + "</span>" : "") + "</span></span><span>" + esc(l.price || "") + "</span></div>";
+        });
         else if (s.items) h += '<div class="line"><span>' + esc(s.items) + "</span><span></span></div>";
         if (s.total) h += '<div class="line total"><span>Total</span><span>' + esc(s.total) + "</span></div>";
+        if (s.pickupAt) h += '<div class="line"><span>Pickup at</span><span>' + esc(time(s.pickupAt)) + "</span></div>";
         h += "</div>";
       }
     }
+    if (unpaid) h += diet(s);
     var svg = qrSvg(s.qr);
     if (live && svg) {
       h += '<div class="wrap' + (status === "ready" && poured ? " ready" : "") + '" id="wrap"><div class="tile"><div class="pour"></div>' + svg + "</div></div>";
@@ -314,19 +364,21 @@ button{font:inherit;cursor:pointer}
     if (live && (s.pickupCode || s.collectBy)) {
       h += '<div class="facts">';
       if (s.pickupCode) h += '<div class="fact"><span>Pickup code</span><b class="code">' + esc(s.pickupCode) + "</b></div>";
-      if (s.collectBy) h += '<div class="fact"><span>Collect by</span><b>' + esc(time(s.collectBy)) + "</b></div>";
+      if (s.pickupAt) h += '<div class="fact"><span>Pickup at</span><b>' + esc(time(s.pickupAt)) + "</b></div>";
+      else if (s.collectBy) h += '<div class="fact"><span>Collect by</span><b>' + esc(time(s.collectBy)) + "</b></div>";
       h += "</div>";
     }
-    h += steps(status);
+    if (live) h += diet(s);
+    h += steps(s);
     var msg = message(s);
     if (msg) h += '<p class="msg">' + esc(msg) + "</p>";
     if (unpaid && s.checkoutUrl) {
       h += '<button class="pay" data-open="checkoutUrl">Pay' + (s.total ? " " + esc(s.total) : "") + "</button>";
-      h += '<p class="note">Card, Apple Pay or Google Pay on the shop\'s secure Square checkout. This card becomes your pickup pass.</p>';
+      h += '<p class="note">Card, Apple Pay or Google Pay on the shop\'s secure checkout. This card becomes your pickup pass.</p>';
     }
     if (s.rail === "test") h += '<p class="test">Test order: no money moved.</p>';
     if (live && s.passUrl) h += '<div class="actions"><button class="link" data-open="passUrl">Open the pass</button></div>';
-    h += '<div class="foot">' + (s.inviteUrl ? '<button class="link" data-open="inviteUrl">Invite a friend</button>' : "<span></span>") + "<span>agentPickup</span></div></div>";
+    h += '<div class="foot">' + (s.inviteUrl ? '<button class="link" data-open="inviteUrl">Invite a friend</button>' : "<span></span>") + '<span class="brand">' + MARK + "agentPickup</span></div></div>";
     return h;
   }
   function render() {
@@ -336,6 +388,11 @@ button{font:inherit;cursor:pointer}
       lastHtml = html;
       var buttons = root.querySelectorAll("[data-open]");
       for (var i = 0; i < buttons.length; i++) buttons[i].addEventListener("click", function (e) { openLink(state[e.currentTarget.getAttribute("data-open")]); });
+      var imgs = root.querySelectorAll("img[data-tile]");
+      for (var j = 0; j < imgs.length; j++) {
+        imgs[j].addEventListener("error", function (e) { e.currentTarget.outerHTML = e.currentTarget.getAttribute("data-tile"); reportSize(); });
+        imgs[j].addEventListener("load", reportSize);
+      }
     }
     // The lime pours in once, the first time the card sees the order ready.
     var wrap = document.getElementById("wrap");
