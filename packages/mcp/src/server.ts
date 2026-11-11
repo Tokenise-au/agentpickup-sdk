@@ -9,7 +9,7 @@ import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.7.2";
+export const VERSION = "0.7.3";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -404,6 +404,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     .max(200)
     .optional()
     .describe("The claim create_pickup_order returned with the order. With it, a paid order's pass comes back too.");
+  const orderIdArg = z.string().min(1).max(64).describe('The order id create_pickup_order returned, like "ord_7HkQ2mXc9aRt".');
 
   const shopArg: Record<string, z.ZodType> =
     opts.allowOtherShops || opts.directoryUrl
@@ -840,9 +841,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Pay for an order",
       description: opts.payer
-        ? `Pay an order in USDC over x402 from wallet ${opts.payer.address}. This spends money: confirm the items and total with the user first. Returns the pickup pass link.`
-        : "No wallet is set up here, so this returns the price and pay link for another x402 client to pay.",
-      inputSchema: { order_id: z.string(), ...shopArg },
+        ? `Pay an order from this agent's own wallet (${opts.payer.address}) in USDC over x402, after the user has agreed the items and ` +
+          "total: this spends money. Returns the pickup pass link, and the shop emails the pass. Card orders aren't paid here: for one, " +
+          "it returns the checkout link for the user to pay on. An order that's already paid isn't paid again."
+        : "Get the payment details for an order made with create_pickup_order. No wallet is set up in this server, so it pays nothing: " +
+          "for an x402 order it returns the USDC price and pay link for another x402 client to pay; for a card order, the checkout " +
+          "link for the user to pay on.",
+      inputSchema: { order_id: orderIdArg, ...shopArg },
       annotations: { title: "Pay for an order", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     guarded(async (args: { order_id: string; shop_url?: string }) => {
@@ -905,9 +910,11 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Check an order",
       description:
-        "Whether an order is waiting for payment, paid, ready to collect, collected or expired. With the order's claim, " +
-        "a paid order's pass comes back too, and the chat's card for it updates.",
-      inputSchema: { order_id: z.string(), claim: claimArg, ...shopArg },
+        "Check where an order is up to, when the user asks if it's paid or ready, or before telling them to go and collect. " +
+        "Returns its status (waiting for payment, paid, being made, ready to collect, collected, expired or cancelled), and the " +
+        "checkout link while it's unpaid. Works with the order id alone. With the claim, a paid order's pass comes back as well and " +
+        "the chat's order card updates. When the user only wants their QR or pickup code again, use get_pickup_pass instead.",
+      inputSchema: { order_id: orderIdArg, claim: claimArg, ...shopArg },
       annotations: { title: "Check an order", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       _meta: CARD_TOOL_META,
     },
@@ -1009,9 +1016,12 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     {
       title: "Get the pickup pass",
       description:
-        "The pass link, pickup code and QR for a paid order: with the claim create_pickup_order returned" +
-        (opts.payer ? ", or by signing in with the wallet that paid (Sign-In-With-X)." : "."),
-      inputSchema: { order_id: z.string(), claim: claimArg, ...shopArg },
+        "Get the pickup pass again for a paid order, when the user asks for their QR, pickup code or pass link (lost the email, " +
+        "closed the card). Returns the pass link, the six-character pickup code and the QR, shown as the pass card. Needs the claim " +
+        "create_pickup_order returned" +
+        (opts.payer ? ", or a sign-in with the wallet that paid (Sign-In-With-X)" : "") +
+        ". An unpaid order has no pass yet: to see where an order is up to, use order_status instead.",
+      inputSchema: { order_id: orderIdArg, claim: claimArg, ...shopArg },
       annotations: { title: "Get the pickup pass", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       _meta: CARD_TOOL_META,
     },
@@ -1206,8 +1216,12 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     "group_order_status",
     {
       title: "Check a group order",
-      description: "Who's in a group order, what they ordered, who has paid, and whether it has closed and been collected.",
-      inputSchema: { code: z.string().min(4).max(12), ...shopArg },
+      description:
+        "Check a group order by its code, when the user asks who's in, what's been ordered or whether it has closed. Returns each " +
+        "person's name, items and whether they've paid, the total paid so far, when it closes, and, once it has closed, the status " +
+        "of the shop's combined order (paid, ready or collected). Anyone with the code can check it; it changes nothing. To add " +
+        "the user's own items, use join_group_order; to close it early as the organiser, use close_group_order.",
+      inputSchema: { code: z.string().min(4).max(12).describe("The group order's code, from start_group_order or as the organiser shared it."), ...shopArg },
       annotations: { title: "Check a group order", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     guarded(async (args: { code: string; shop_url?: string }) => {
