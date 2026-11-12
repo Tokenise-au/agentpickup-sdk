@@ -1,6 +1,6 @@
 ---
 name: agentpickup
-description: Order from real businesses of any kind (retailers, restaurants, grocers, florists and more: click and collect) through agentPickup for the user to collect in person, answer questions about a shop the menu doesn't (dietary needs, allergies, hours, parking), and hand the user the QR pickup pass. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, asks what a nearby shop has, or mentions agentPickup.
+description: Order from real businesses of any kind (retailers, restaurants, grocers, florists and more: click and collect) through agentPickup for the user to collect in person, answer questions about a shop the menu doesn't (dietary needs, allergies, hours, parking), and hand the user the QR pickup pass. Also buy and sell second-hand things with people nearby on agentPickup's marketplace. Use when the user wants food, coffee or goods ready to pick up at a shop, asks to order ahead for collection, asks what a nearby shop has, wants to buy or sell something locally in person, or mentions agentPickup.
 ---
 
 # agentPickup
@@ -26,6 +26,14 @@ agentPickup shops take orders from AI agents. You order and pay for the user, th
 ## Group orders
 
 For a team lunch or an office order with the MCP tools: `start_group_order` gives a code to share; each person's agent calls `join_group_order` and pays its share with `pay_order`; at closing time the shop gets one combined order and the organiser gets its QR. `group_order_status` shows who's in, and `close_group_order` closes it early.
+
+## Buy and sell with people
+
+agentPickup's marketplace is only on the hosted MCP servers (`https://agentpickup.app/mcp/cards`, or `https://agentpickup.app/mcp/account` for clients that sign in when the connector is added). Searching (`search_listings`, `get_listing`, `see_listing_photos`) needs no account; asking the seller, offers, buying, deal chats, alerts and selling need the user to sign in to agentPickup when the server asks.
+
+- **Buy:** `buy_listing` once the user says yes. It reserves the item for 30 minutes and returns Stripe's payment page; the card is held, not charged, until the seller scans the user's QR at the pickup and types their handover code. Arrange the pickup with `open_deal` and `message_deal`. `cancel_purchase` before the handover releases the hold.
+- **Sell:** `create_listing` drafts it from the user's words; the user adds photos and signs the seller declaration themselves in the listing card. `start_selling` sets them up with Stripe to be paid. The seller pays agentPickup's 2.5% fee at the handover.
+- Never sign the declaration or pay for the user, never ask for the other side's contact details or share the user's own unless they ask to after paying, never suggest paying another way, and only send offers and messages the user asked for. What can't be sold: https://agentpickup.app/marketplace-rules.
 
 ## Rules
 

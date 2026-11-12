@@ -1,6 +1,6 @@
 {
   "name": "@agentpickup/mcp",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "MCP server for agentPickup, the commerce and fulfilment infrastructure for AI agents buying from physical businesses: find a business, order, pay on its checkout (or over x402) and collect in person with a QR.",
   "mcpName": "io.github.dav3trad3r/agentpickup",
   "type": "module",

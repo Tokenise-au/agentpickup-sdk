@@ -6,6 +6,10 @@ doesn't (dietary needs, allergies, hours, parking), order, and have the user pay
 (or pay in USDC over x402 from an agent wallet). The order lands on the shop's own POS, and the user collects with the
 QR they show at the counter.
 
+The hosted servers at agentpickup.app also carry agentPickup's marketplace, where people buy and sell with each
+other. Its tools act for a signed-in agentPickup account, so they're only on the hosted servers, not in this package:
+see [the developer docs](https://agentpickup.app/docs/developers#marketplace).
+
 ## Tools
 
 | Tool | What it does |
@@ -82,6 +86,10 @@ const mcp = createMcpHandler({ shopUrl: "https://orders.yourshop.com" }); // no 
 // `instructions` adds your own notes to what agents read on connecting, e.g. which of your shops take what.
 app.all("/mcp", (c) => mcp(c.req.raw)); // Streamable HTTP, stateless, any Request/Response runtime
 ```
+
+To add your own tools after agentPickup's, pass `extend: (server) => { server.registerTool(...) }`. `toolMeta` is
+merged into every tool's `_meta` (a tool's own keys win), for example ChatGPT's
+`{ securitySchemes: [{ type: "noauth" }] }` when your server offers sign-in for some tools.
 
 Node 22.13 or later. Licence: FSL-1.1-ALv2 (free to use and self-host; becomes Apache-2.0 two years after
 each release).

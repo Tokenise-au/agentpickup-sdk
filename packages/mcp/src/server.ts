@@ -9,7 +9,7 @@ import { SHARE_META_KEY, shareCardHtml, type ShareCard } from "./share-card.js";
 import { MENU_META_KEY, menuCardHtml, type MenuCard } from "./menu-card.js";
 import { errorOf, usd, type Fetch, type Payer } from "./wallet.js";
 
-export const VERSION = "0.7.3";
+export const VERSION = "0.7.4";
 
 // The pickup pass card (MCP Apps). The version is in the URI so hosts that cache cards pick up a new one.
 const CARD_URI = `ui://agentpickup/pass-${VERSION}.html`;
@@ -64,6 +64,13 @@ export interface PickupMcpOptions {
    * "Invite a friend" link point to. Default https://agentpickup.app/add.
    */
   addPageUrl?: string;
+  /** More tools, registered after agentPickup's own: a host adds its own (the hosted marketplace's signed-in tools). */
+  extend?: (server: McpServer) => void;
+  /**
+   * Merged into every tool's _meta, the extend tools' included; a tool's own _meta keys win. A host offering sign-in
+   * declares ChatGPT's securitySchemes here, e.g. `{ securitySchemes: [{ type: "noauth" }] }`.
+   */
+  toolMeta?: Record<string, unknown>;
 }
 
 type DirectoryShop = {
@@ -423,6 +430,13 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
       instructions: (opts.cardsOnly ? CARDS_INSTRUCTIONS : INSTRUCTIONS) + (opts.instructions ? `\n${opts.instructions}` : ""),
     },
   );
+
+  if (opts.toolMeta) {
+    const shared = opts.toolMeta;
+    const register = server.registerTool.bind(server) as (name: string, config: { _meta?: Record<string, unknown> }, cb: unknown) => unknown;
+    server.registerTool = ((name: string, config: { _meta?: Record<string, unknown> }, cb: unknown) =>
+      register(name, { ...config, _meta: { ...shared, ...config._meta } }, cb)) as typeof server.registerTool;
+  }
 
   // The cards load the shop's logo and item photos from the shop's own /img/ addresses: their CSP names those origins.
   const photoOrigins = [...new Set([new URL(opts.shopUrl).origin, ...(opts.directoryUrl ? [new URL(opts.directoryUrl).origin] : [])])];
@@ -1258,6 +1272,7 @@ export function createPickupMcpServer(opts: PickupMcpOptions): McpServer {
     }),
   );
 
+  opts.extend?.(server);
   return server;
 }
 
